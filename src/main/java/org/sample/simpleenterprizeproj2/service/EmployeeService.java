@@ -1,67 +1,88 @@
 package org.sample.simpleenterprizeproj2.service;
 
+import org.sample.simpleenterprizeproj2.dto.EmployeePatchRequest;
+import org.sample.simpleenterprizeproj2.dto.EmployeeRequest;
+import org.sample.simpleenterprizeproj2.dto.EmployeeResponse;
 import org.sample.simpleenterprizeproj2.exception.ResourceNotFoundException;
+import org.sample.simpleenterprizeproj2.mapper.EmployeeMapper;
 import org.sample.simpleenterprizeproj2.model.Department;
 import org.sample.simpleenterprizeproj2.model.Employee;
-import org.sample.simpleenterprizeproj2.repository.DepartmentRepository;
 import org.sample.simpleenterprizeproj2.repository.EmployeeRepository;
+import org.sample.simpleenterprizeproj2.specification.EmployeeSpecification;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
-import java.util.List;
 
 @Service
 @Transactional(readOnly = true)
 public class EmployeeService {
 
     private final EmployeeRepository employeeRepository;
-    private final DepartmentRepository departmentRepository;
+    private final DepartmentService departmentService;
+    private final EmployeeMapper employeeMapper;
 
-    public EmployeeService(EmployeeRepository employeeRepository, DepartmentRepository departmentRepository) {
+    public EmployeeService(EmployeeRepository employeeRepository, DepartmentService departmentService,
+                           EmployeeMapper employeeMapper) {
         this.employeeRepository = employeeRepository;
-        this.departmentRepository = departmentRepository;
+        this.departmentService = departmentService;
+        this.employeeMapper = employeeMapper;
     }
 
-    public List<Employee> findAll() {
-        return employeeRepository.findAll();
+    public Page<EmployeeResponse> findAll(String firstName, String lastName, String email,
+                                          Long departmentId, Pageable pageable) {
+        return employeeRepository.findAll(
+                        EmployeeSpecification.build(firstName, lastName, email, departmentId), pageable)
+                .map(employeeMapper::toResponse);
     }
 
-    public Employee findById(Long id) {
+    public EmployeeResponse findResponseById(Long id) {
+        return employeeMapper.toResponse(findEntityById(id));
+    }
+
+    public Employee findEntityById(Long id) {
         return employeeRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found with id " + id));
     }
 
     @Transactional
-    public Employee create(Employee employee) {
-        if (employee.getDepartment() != null && employee.getDepartment().getId() != null) {
-            Department dept = departmentRepository.findById(employee.getDepartment().getId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Department not found with id " + employee.getDepartment().getId()));
-            employee.setDepartment(dept);
-        }
-        return employeeRepository.save(employee);
+    public EmployeeResponse create(EmployeeRequest request) {
+        Employee employee = employeeMapper.toEntity(request);
+        resolveDepartment(employee, request.getDepartmentId());
+        return employeeMapper.toResponse(employeeRepository.save(employee));
     }
 
     @Transactional
-    public Employee update(Long id, Employee updated) {
-        Employee employee = findById(id);
-        employee.setFirstName(updated.getFirstName());
-        employee.setLastName(updated.getLastName());
-        employee.setEmail(updated.getEmail());
-        employee.setPhone(updated.getPhone());
-        if (updated.getDepartment() != null && updated.getDepartment().getId() != null) {
-            Department dept = departmentRepository.findById(updated.getDepartment().getId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Department not found with id " + updated.getDepartment().getId()));
-            employee.setDepartment(dept);
-        } else {
-            employee.setDepartment(null);
+    public EmployeeResponse update(Long id, EmployeeRequest request) {
+        Employee employee = findEntityById(id);
+        employeeMapper.updateEntity(employee, request);
+        resolveDepartment(employee, request.getDepartmentId());
+        return employeeMapper.toResponse(employeeRepository.save(employee));
+    }
+
+    @Transactional
+    public EmployeeResponse patch(Long id, EmployeePatchRequest request) {
+        Employee employee = findEntityById(id);
+        employeeMapper.patchEntity(employee, request);
+        if (request.getDepartmentId() != null) {
+            resolveDepartment(employee, request.getDepartmentId());
         }
-        return employeeRepository.save(employee);
+        return employeeMapper.toResponse(employeeRepository.save(employee));
     }
 
     @Transactional
     public void delete(Long id) {
-        Employee employee = findById(id);
+        Employee employee = findEntityById(id);
         employee.setDeleted(true);
         employeeRepository.save(employee);
+    }
+
+    private void resolveDepartment(Employee employee, Long departmentId) {
+        if (departmentId != null) {
+            Department dept = departmentService.findEntityById(departmentId);
+            employee.setDepartment(dept);
+        } else {
+            employee.setDepartment(null);
+        }
     }
 }
