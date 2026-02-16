@@ -4,10 +4,12 @@ import org.sample.simpleenterprizeproj2.exception.ResourceNotFoundException;
 import org.sample.simpleenterprizeproj2.model.User;
 import org.sample.simpleenterprizeproj2.repository.UserRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
 @Service
+@Transactional(readOnly = true)
 public class UserService {
 
     private final UserRepository userRepository;
@@ -25,10 +27,12 @@ public class UserService {
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with id " + id));
     }
 
+    @Transactional
     public User create(User user) {
         return userRepository.save(user);
     }
 
+    @Transactional
     public User update(Long id, User updated) {
         User user = findById(id);
         user.setUsername(updated.getUsername());
@@ -38,6 +42,7 @@ public class UserService {
         return userRepository.save(user);
     }
 
+    @Transactional
     public void delete(Long id) {
         User user = findById(id);
         userRepository.delete(user);

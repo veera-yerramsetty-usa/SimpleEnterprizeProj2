@@ -6,10 +6,12 @@ import org.sample.simpleenterprizeproj2.model.Employee;
 import org.sample.simpleenterprizeproj2.repository.DepartmentRepository;
 import org.sample.simpleenterprizeproj2.repository.EmployeeRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
 @Service
+@Transactional(readOnly = true)
 public class EmployeeService {
 
     private final EmployeeRepository employeeRepository;
@@ -29,6 +31,7 @@ public class EmployeeService {
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found with id " + id));
     }
 
+    @Transactional
     public Employee create(Employee employee) {
         if (employee.getDepartment() != null && employee.getDepartment().getId() != null) {
             Department dept = departmentRepository.findById(employee.getDepartment().getId())
@@ -38,6 +41,7 @@ public class EmployeeService {
         return employeeRepository.save(employee);
     }
 
+    @Transactional
     public Employee update(Long id, Employee updated) {
         Employee employee = findById(id);
         employee.setFirstName(updated.getFirstName());
@@ -54,6 +58,7 @@ public class EmployeeService {
         return employeeRepository.save(employee);
     }
 
+    @Transactional
     public void delete(Long id) {
         Employee employee = findById(id);
         employeeRepository.delete(employee);
