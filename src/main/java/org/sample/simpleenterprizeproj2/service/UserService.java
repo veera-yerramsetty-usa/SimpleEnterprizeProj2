@@ -45,6 +45,7 @@ public class UserService {
     @Transactional
     public void delete(Long id) {
         User user = findById(id);
-        userRepository.delete(user);
+        user.setDeleted(true);
+        userRepository.save(user);
     }
 }

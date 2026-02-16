@@ -61,6 +61,7 @@ public class EmployeeService {
     @Transactional
     public void delete(Long id) {
         Employee employee = findById(id);
-        employeeRepository.delete(employee);
+        employee.setDeleted(true);
+        employeeRepository.save(employee);
     }
 }

@@ -1,9 +1,11 @@
 package org.sample.simpleenterprizeproj2.model;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.SQLRestriction;
 
 @Entity
 @Table(name = "departments")
+@SQLRestriction("deleted = false")
 public class Department {
 
     @Id
@@ -14,6 +16,8 @@ public class Department {
     private String name;
 
     private String description;
+
+    private boolean deleted = false;
 
     public Department() {}
 
@@ -30,4 +34,7 @@ public class Department {
 
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }
+
+    public boolean isDeleted() { return deleted; }
+    public void setDeleted(boolean deleted) { this.deleted = deleted; }
 }

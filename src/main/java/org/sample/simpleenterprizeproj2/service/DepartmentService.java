@@ -43,6 +43,7 @@ public class DepartmentService {
     @Transactional
     public void delete(Long id) {
         Department department = findById(id);
-        departmentRepository.delete(department);
+        department.setDeleted(true);
+        departmentRepository.save(department);
     }
 }

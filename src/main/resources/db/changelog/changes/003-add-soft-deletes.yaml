@@ -1,0 +1,50 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-add-soft-deletes
+      author: developer
+      changes:
+        - addColumn:
+            tableName: users
+            columns:
+              - column:
+                  name: deleted
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+        - addColumn:
+            tableName: employees
+            columns:
+              - column:
+                  name: deleted
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+        - addColumn:
+            tableName: departments
+            columns:
+              - column:
+                  name: deleted
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+        - createIndex:
+            indexName: idx_users_deleted
+            tableName: users
+            columns:
+              - column:
+                  name: deleted
+        - createIndex:
+            indexName: idx_employees_deleted
+            tableName: employees
+            columns:
+              - column:
+                  name: deleted
+        - createIndex:
+            indexName: idx_departments_deleted
+            tableName: departments
+            columns:
+              - column:
+                  name: deleted

@@ -1,9 +1,11 @@
 package org.sample.simpleenterprizeproj2.model;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.SQLRestriction;
 
 @Entity
 @Table(name = "employees")
+@SQLRestriction("deleted = false")
 public class Employee {
 
     @Id
@@ -24,6 +26,8 @@ public class Employee {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "department_id")
     private Department department;
+
+    private boolean deleted = false;
 
     public Employee() {}
 
@@ -52,4 +56,7 @@ public class Employee {
 
     public Department getDepartment() { return department; }
     public void setDepartment(Department department) { this.department = department; }
+
+    public boolean isDeleted() { return deleted; }
+    public void setDeleted(boolean deleted) { this.deleted = deleted; }
 }

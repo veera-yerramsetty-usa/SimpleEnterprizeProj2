@@ -1,9 +1,11 @@
 package org.sample.simpleenterprizeproj2.model;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.SQLRestriction;
 
 @Entity
 @Table(name = "users")
+@SQLRestriction("deleted = false")
 public class User {
 
     @Id
@@ -20,6 +22,8 @@ public class User {
     private String password;
 
     private String role;
+
+    private boolean deleted = false;
 
     public User() {}
 
@@ -44,4 +48,7 @@ public class User {
 
     public String getRole() { return role; }
     public void setRole(String role) { this.role = role; }
+
+    public boolean isDeleted() { return deleted; }
+    public void setDeleted(boolean deleted) { this.deleted = deleted; }
 }
