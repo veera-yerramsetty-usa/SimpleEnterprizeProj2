@@ -13,7 +13,7 @@ public class DepartmentSpecification {
         if (name != null && !name.isBlank()) {
             String escaped = SanitizationUtils.escapeWildcards(name.toLowerCase());
             spec = spec.and((root, query, cb) ->
-                    cb.like(cb.lower(root.get("name")), "%" + escaped + "%"));
+                    cb.like(cb.lower(root.get("name")), "%" + escaped + "%", '\\'));
         }
         return spec;
     }

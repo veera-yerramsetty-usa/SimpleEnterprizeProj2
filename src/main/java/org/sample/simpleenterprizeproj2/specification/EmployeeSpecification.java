@@ -13,17 +13,17 @@ public class EmployeeSpecification {
         if (firstName != null && !firstName.isBlank()) {
             String escaped = SanitizationUtils.escapeWildcards(firstName.toLowerCase());
             spec = spec.and((root, query, cb) ->
-                    cb.like(cb.lower(root.get("firstName")), "%" + escaped + "%"));
+                    cb.like(cb.lower(root.get("firstName")), "%" + escaped + "%", '\\'));
         }
         if (lastName != null && !lastName.isBlank()) {
             String escaped = SanitizationUtils.escapeWildcards(lastName.toLowerCase());
             spec = spec.and((root, query, cb) ->
-                    cb.like(cb.lower(root.get("lastName")), "%" + escaped + "%"));
+                    cb.like(cb.lower(root.get("lastName")), "%" + escaped + "%", '\\'));
         }
         if (email != null && !email.isBlank()) {
             String escaped = SanitizationUtils.escapeWildcards(email.toLowerCase());
             spec = spec.and((root, query, cb) ->
-                    cb.like(cb.lower(root.get("email")), "%" + escaped + "%"));
+                    cb.like(cb.lower(root.get("email")), "%" + escaped + "%", '\\'));
         }
         if (departmentId != null) {
             spec = spec.and((root, query, cb) ->

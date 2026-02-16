@@ -13,12 +13,12 @@ public class UserSpecification {
         if (username != null && !username.isBlank()) {
             String escaped = SanitizationUtils.escapeWildcards(username.toLowerCase());
             spec = spec.and((root, query, cb) ->
-                    cb.like(cb.lower(root.get("username")), "%" + escaped + "%"));
+                    cb.like(cb.lower(root.get("username")), "%" + escaped + "%", '\\'));
         }
         if (email != null && !email.isBlank()) {
             String escaped = SanitizationUtils.escapeWildcards(email.toLowerCase());
             spec = spec.and((root, query, cb) ->
-                    cb.like(cb.lower(root.get("email")), "%" + escaped + "%"));
+                    cb.like(cb.lower(root.get("email")), "%" + escaped + "%", '\\'));
         }
         if (role != null && !role.isBlank()) {
             spec = spec.and((root, query, cb) ->
