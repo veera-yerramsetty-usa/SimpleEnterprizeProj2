@@ -1,6 +1,7 @@
 package org.sample.simpleenterprizeproj2.controller;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import org.sample.simpleenterprizeproj2.dto.DepartmentPatchRequest;
 import org.sample.simpleenterprizeproj2.dto.DepartmentRequest;
 import org.sample.simpleenterprizeproj2.dto.DepartmentResponse;
@@ -11,6 +12,7 @@ import org.springframework.data.web.PagedResourcesAssembler;
 import org.springframework.hateoas.EntityModel;
 import org.springframework.hateoas.PagedModel;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
@@ -19,6 +21,7 @@ import java.net.URI;
 import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.linkTo;
 import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.methodOn;
 
+@Validated
 @RestController
 @RequestMapping("/api/v1/departments")
 public class DepartmentController {
@@ -34,7 +37,7 @@ public class DepartmentController {
 
     @GetMapping
     public ResponseEntity<PagedModel<EntityModel<DepartmentResponse>>> getAll(
-            @RequestParam(required = false) String name,
+            @RequestParam(required = false) @Size(max = 255) String name,
             Pageable pageable) {
         Page<DepartmentResponse> page = departmentService.findAll(name, pageable);
         return ResponseEntity.ok(pagedAssembler.toModel(page,

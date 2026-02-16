@@ -4,6 +4,7 @@ import org.sample.simpleenterprizeproj2.dto.EmployeePatchRequest;
 import org.sample.simpleenterprizeproj2.dto.EmployeeRequest;
 import org.sample.simpleenterprizeproj2.dto.EmployeeResponse;
 import org.sample.simpleenterprizeproj2.model.Employee;
+import org.sample.simpleenterprizeproj2.util.SanitizationUtils;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -17,10 +18,10 @@ public class EmployeeMapper {
 
     public Employee toEntity(EmployeeRequest request) {
         Employee employee = new Employee();
-        employee.setFirstName(request.getFirstName());
-        employee.setLastName(request.getLastName());
-        employee.setEmail(request.getEmail());
-        employee.setPhone(request.getPhone());
+        employee.setFirstName(SanitizationUtils.sanitize(request.getFirstName()));
+        employee.setLastName(SanitizationUtils.sanitize(request.getLastName()));
+        employee.setEmail(SanitizationUtils.sanitize(request.getEmail()));
+        employee.setPhone(SanitizationUtils.sanitize(request.getPhone()));
         return employee;
     }
 
@@ -38,24 +39,24 @@ public class EmployeeMapper {
     }
 
     public void updateEntity(Employee employee, EmployeeRequest request) {
-        employee.setFirstName(request.getFirstName());
-        employee.setLastName(request.getLastName());
-        employee.setEmail(request.getEmail());
-        employee.setPhone(request.getPhone());
+        employee.setFirstName(SanitizationUtils.sanitize(request.getFirstName()));
+        employee.setLastName(SanitizationUtils.sanitize(request.getLastName()));
+        employee.setEmail(SanitizationUtils.sanitize(request.getEmail()));
+        employee.setPhone(SanitizationUtils.sanitize(request.getPhone()));
     }
 
     public void patchEntity(Employee employee, EmployeePatchRequest request) {
         if (request.getFirstName() != null) {
-            employee.setFirstName(request.getFirstName());
+            employee.setFirstName(SanitizationUtils.sanitize(request.getFirstName()));
         }
         if (request.getLastName() != null) {
-            employee.setLastName(request.getLastName());
+            employee.setLastName(SanitizationUtils.sanitize(request.getLastName()));
         }
         if (request.getEmail() != null) {
-            employee.setEmail(request.getEmail());
+            employee.setEmail(SanitizationUtils.sanitize(request.getEmail()));
         }
         if (request.getPhone() != null) {
-            employee.setPhone(request.getPhone());
+            employee.setPhone(SanitizationUtils.sanitize(request.getPhone()));
         }
     }
 }

@@ -1,6 +1,7 @@
 package org.sample.simpleenterprizeproj2.controller;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import org.sample.simpleenterprizeproj2.dto.UserPatchRequest;
 import org.sample.simpleenterprizeproj2.dto.UserRequest;
 import org.sample.simpleenterprizeproj2.dto.UserResponse;
@@ -11,6 +12,7 @@ import org.springframework.data.web.PagedResourcesAssembler;
 import org.springframework.hateoas.EntityModel;
 import org.springframework.hateoas.PagedModel;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
@@ -19,6 +21,7 @@ import java.net.URI;
 import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.linkTo;
 import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.methodOn;
 
+@Validated
 @RestController
 @RequestMapping("/api/v1/users")
 public class UserController {
@@ -34,9 +37,9 @@ public class UserController {
 
     @GetMapping
     public ResponseEntity<PagedModel<EntityModel<UserResponse>>> getAll(
-            @RequestParam(required = false) String username,
-            @RequestParam(required = false) String email,
-            @RequestParam(required = false) String role,
+            @RequestParam(required = false) @Size(max = 255) String username,
+            @RequestParam(required = false) @Size(max = 255) String email,
+            @RequestParam(required = false) @Size(max = 255) String role,
             Pageable pageable) {
         Page<UserResponse> page = userService.findAll(username, email, role, pageable);
         return ResponseEntity.ok(pagedAssembler.toModel(page,

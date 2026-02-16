@@ -1,6 +1,7 @@
 package org.sample.simpleenterprizeproj2.controller;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import org.sample.simpleenterprizeproj2.dto.EmployeePatchRequest;
 import org.sample.simpleenterprizeproj2.dto.EmployeeRequest;
 import org.sample.simpleenterprizeproj2.dto.EmployeeResponse;
@@ -11,6 +12,7 @@ import org.springframework.data.web.PagedResourcesAssembler;
 import org.springframework.hateoas.EntityModel;
 import org.springframework.hateoas.PagedModel;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
@@ -19,6 +21,7 @@ import java.net.URI;
 import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.linkTo;
 import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.methodOn;
 
+@Validated
 @RestController
 @RequestMapping("/api/v1/employees")
 public class EmployeeController {
@@ -34,9 +37,9 @@ public class EmployeeController {
 
     @GetMapping
     public ResponseEntity<PagedModel<EntityModel<EmployeeResponse>>> getAll(
-            @RequestParam(required = false) String firstName,
-            @RequestParam(required = false) String lastName,
-            @RequestParam(required = false) String email,
+            @RequestParam(required = false) @Size(max = 255) String firstName,
+            @RequestParam(required = false) @Size(max = 255) String lastName,
+            @RequestParam(required = false) @Size(max = 255) String email,
             @RequestParam(required = false) Long departmentId,
             Pageable pageable) {
         Page<EmployeeResponse> page = employeeService.findAll(firstName, lastName, email, departmentId, pageable);

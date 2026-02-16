@@ -2,16 +2,19 @@ package org.sample.simpleenterprizeproj2.dto;
 
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 public class EmployeeRequest {
 
     @NotBlank(message = "First name is required")
     @Size(max = 255, message = "First name must not exceed 255 characters")
+    @Pattern(regexp = "^[a-zA-Z '-]+$", message = "First name must contain only letters, spaces, hyphens, or apostrophes")
     private String firstName;
 
     @NotBlank(message = "Last name is required")
     @Size(max = 255, message = "Last name must not exceed 255 characters")
+    @Pattern(regexp = "^[a-zA-Z '-]+$", message = "Last name must contain only letters, spaces, hyphens, or apostrophes")
     private String lastName;
 
     @NotBlank(message = "Email is required")
@@ -20,6 +23,7 @@ public class EmployeeRequest {
     private String email;
 
     @Size(max = 255, message = "Phone must not exceed 255 characters")
+    @Pattern(regexp = "^[+]?[0-9() -]+$", message = "Phone must contain only digits, spaces, +, -, or parentheses")
     private String phone;
 
     private Long departmentId;

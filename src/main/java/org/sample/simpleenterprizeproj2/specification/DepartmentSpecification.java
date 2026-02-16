@@ -1,6 +1,7 @@
 package org.sample.simpleenterprizeproj2.specification;
 
 import org.sample.simpleenterprizeproj2.model.Department;
+import org.sample.simpleenterprizeproj2.util.SanitizationUtils;
 import org.springframework.data.jpa.domain.Specification;
 
 public class DepartmentSpecification {
@@ -10,8 +11,9 @@ public class DepartmentSpecification {
     public static Specification<Department> build(String name) {
         Specification<Department> spec = Specification.where((Specification<Department>) null);
         if (name != null && !name.isBlank()) {
+            String escaped = SanitizationUtils.escapeWildcards(name.toLowerCase());
             spec = spec.and((root, query, cb) ->
-                    cb.like(cb.lower(root.get("name")), "%" + name.toLowerCase() + "%"));
+                    cb.like(cb.lower(root.get("name")), "%" + escaped + "%"));
         }
         return spec;
     }
