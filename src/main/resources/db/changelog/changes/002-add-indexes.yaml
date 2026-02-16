@@ -1,0 +1,25 @@
+databaseChangeLog:
+  - changeSet:
+      id: "002"
+      author: "initial"
+      changes:
+        - createIndex:
+            tableName: employees
+            indexName: idx_employees_department_id
+            columns:
+              - column:
+                  name: department_id
+        - createIndex:
+            tableName: employees
+            indexName: idx_employees_name
+            columns:
+              - column:
+                  name: last_name
+              - column:
+                  name: first_name
+        - createIndex:
+            tableName: users
+            indexName: idx_users_role
+            columns:
+              - column:
+                  name: role
