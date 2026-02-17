@@ -169,3 +169,15 @@ Added **webhook support** for real-time event delivery to registered HTTP endpoi
 - **Secret is write-only** — never exposed in API responses to prevent leakage
 - **Hard delete** — webhooks are infrastructure entities; CASCADE FK cleans up delivery logs automatically
 - Liquibase migration `005-add-webhook-tables.yaml` creates tables with indexes and FK constraint
+
+## 23. Multi-language Support / i18n (`dev`)
+
+Added **internationalization (i18n)** so the API returns localized error messages based on the `Accept-Language` header — zero new Maven dependencies (Spring's `MessageSource` is built into `spring-boot-starter`):
+- **`LocaleConfig`** — `@Configuration` with `ReloadableResourceBundleMessageSource` (UTF-8, `classpath:messages`), `AcceptHeaderLocaleResolver` (default `Locale.ENGLISH`), and `LocalValidatorFactoryBean` wired to `MessageSource`
+- **`messages.properties`** (English default) — ~70 keys covering validation (`validation.user.*`, `validation.employee.*`, etc.), errors (`error.not.found.*`, `error.validation.failed`, `error.conflict.unique`, etc.), and filter messages
+- **`messages_es.properties`** (Spanish) — full translation demonstrating multi-locale support
+- **DTO validation messages** — all 9 DTO files updated from hardcoded `message="..."` to `message="{key}"` (Jakarta Bean Validation standard)
+- **`ResourceNotFoundException`** — enhanced with `messageCode` + `messageArgs` fields; services throw with code+args, handler resolves for current locale
+- **`GlobalExceptionHandler`** — injected `MessageSource`; all 10 handler methods resolve messages via `messageSource.getMessage()` + `LocaleContextHolder.getLocale()`
+- **`IdempotencyFilter`** — conflict response message resolved via `MessageSource`
+- **Log messages stay in English** — internal logs are for developers/ops, only API response bodies are internationalized

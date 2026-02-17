@@ -7,23 +7,23 @@ import jakarta.validation.constraints.Size;
 
 public class UserRequest {
 
-    @NotBlank(message = "Username is required")
-    @Size(max = 255, message = "Username must not exceed 255 characters")
-    @Pattern(regexp = "^[a-zA-Z0-9_-]+$", message = "Username must contain only alphanumeric characters, underscores, or hyphens")
+    @NotBlank(message = "{validation.user.username.required}")
+    @Size(max = 255, message = "{validation.user.username.size}")
+    @Pattern(regexp = "^[a-zA-Z0-9_-]+$", message = "{validation.user.username.pattern}")
     private String username;
 
-    @NotBlank(message = "Email is required")
-    @Email(message = "Email must be valid")
-    @Size(max = 255, message = "Email must not exceed 255 characters")
+    @NotBlank(message = "{validation.user.email.required}")
+    @Email(message = "{validation.user.email.valid}")
+    @Size(max = 255, message = "{validation.user.email.size}")
     private String email;
 
-    @NotBlank(message = "Password is required")
-    @Size(min = 8, max = 255, message = "Password must be between 8 and 255 characters")
-    @Pattern(regexp = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).+$", message = "Password must contain at least one uppercase letter, one lowercase letter, and one digit")
+    @NotBlank(message = "{validation.user.password.required}")
+    @Size(min = 8, max = 255, message = "{validation.user.password.size}")
+    @Pattern(regexp = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).+$", message = "{validation.user.password.pattern}")
     private String password;
 
-    @Size(max = 255, message = "Role must not exceed 255 characters")
-    @Pattern(regexp = "^[a-zA-Z0-9_]+$", message = "Role must contain only alphanumeric characters or underscores")
+    @Size(max = 255, message = "{validation.user.role.size}")
+    @Pattern(regexp = "^[a-zA-Z0-9_]+$", message = "{validation.user.role.pattern}")
     private String role;
 
     public String getUsername() { return username; }

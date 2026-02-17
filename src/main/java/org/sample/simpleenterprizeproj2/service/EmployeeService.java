@@ -65,7 +65,7 @@ public class EmployeeService {
     @Retry(name = "employeeService")
     public Employee findEntityById(Long id) {
         return employeeRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Employee not found with id " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("error.not.found.employee", id));
     }
 
     @CircuitBreaker(name = "employeeService", fallbackMethod = "createFallback")

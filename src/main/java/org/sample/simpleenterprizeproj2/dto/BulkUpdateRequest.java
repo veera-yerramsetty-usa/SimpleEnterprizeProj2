@@ -5,10 +5,10 @@ import jakarta.validation.constraints.NotNull;
 
 public class BulkUpdateRequest<T> {
 
-    @NotNull(message = "ID is required")
+    @NotNull(message = "{validation.bulk.id.required}")
     private Long id;
 
-    @NotNull(message = "Data is required")
+    @NotNull(message = "{validation.bulk.data.required}")
     @Valid
     private T data;
 

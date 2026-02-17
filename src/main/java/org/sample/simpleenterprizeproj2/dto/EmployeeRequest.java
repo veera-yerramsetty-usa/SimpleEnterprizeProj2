@@ -7,23 +7,23 @@ import jakarta.validation.constraints.Size;
 
 public class EmployeeRequest {
 
-    @NotBlank(message = "First name is required")
-    @Size(max = 255, message = "First name must not exceed 255 characters")
-    @Pattern(regexp = "^[a-zA-Z '-]+$", message = "First name must contain only letters, spaces, hyphens, or apostrophes")
+    @NotBlank(message = "{validation.employee.firstName.required}")
+    @Size(max = 255, message = "{validation.employee.firstName.size}")
+    @Pattern(regexp = "^[a-zA-Z '-]+$", message = "{validation.employee.firstName.pattern}")
     private String firstName;
 
-    @NotBlank(message = "Last name is required")
-    @Size(max = 255, message = "Last name must not exceed 255 characters")
-    @Pattern(regexp = "^[a-zA-Z '-]+$", message = "Last name must contain only letters, spaces, hyphens, or apostrophes")
+    @NotBlank(message = "{validation.employee.lastName.required}")
+    @Size(max = 255, message = "{validation.employee.lastName.size}")
+    @Pattern(regexp = "^[a-zA-Z '-]+$", message = "{validation.employee.lastName.pattern}")
     private String lastName;
 
-    @NotBlank(message = "Email is required")
-    @Email(message = "Email must be valid")
-    @Size(max = 255, message = "Email must not exceed 255 characters")
+    @NotBlank(message = "{validation.employee.email.required}")
+    @Email(message = "{validation.employee.email.valid}")
+    @Size(max = 255, message = "{validation.employee.email.size}")
     private String email;
 
-    @Size(max = 255, message = "Phone must not exceed 255 characters")
-    @Pattern(regexp = "^[+]?[0-9() -]+$", message = "Phone must contain only digits, spaces, +, -, or parentheses")
+    @Size(max = 255, message = "{validation.employee.phone.size}")
+    @Pattern(regexp = "^[+]?[0-9() -]+$", message = "{validation.employee.phone.pattern}")
     private String phone;
 
     private Long departmentId;

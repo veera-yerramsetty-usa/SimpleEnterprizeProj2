@@ -5,12 +5,12 @@ import jakarta.validation.constraints.Size;
 
 public class DepartmentPatchRequest {
 
-    @Size(min = 1, max = 255, message = "Name must be between 1 and 255 characters")
-    @Pattern(regexp = "^[a-zA-Z '-]+$", message = "Name must contain only letters, spaces, hyphens, or apostrophes")
+    @Size(min = 1, max = 255, message = "{validation.department.name.patch.size}")
+    @Pattern(regexp = "^[a-zA-Z '-]+$", message = "{validation.department.name.pattern}")
     private String name;
 
-    @Size(max = 255, message = "Description must not exceed 255 characters")
-    @Pattern(regexp = "^[a-zA-Z0-9 .,;:!?'\"()\\-]*$", message = "Description must contain only letters, digits, spaces, or common punctuation")
+    @Size(max = 255, message = "{validation.department.description.size}")
+    @Pattern(regexp = "^[a-zA-Z0-9 .,;:!?'\"()\\-]*$", message = "{validation.department.description.pattern}")
     private String description;
 
     public String getName() { return name; }

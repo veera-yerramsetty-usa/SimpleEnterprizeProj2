@@ -8,6 +8,8 @@ import org.sample.simpleenterprizeproj2.model.IdempotencyRecord;
 import org.sample.simpleenterprizeproj2.repository.IdempotencyRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.MessageSource;
+import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.core.annotation.Order;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
@@ -29,9 +31,11 @@ public class IdempotencyFilter implements Filter {
     private static final String IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
     private final IdempotencyRepository idempotencyRepository;
+    private final MessageSource messageSource;
 
-    public IdempotencyFilter(IdempotencyRepository idempotencyRepository) {
+    public IdempotencyFilter(IdempotencyRepository idempotencyRepository, MessageSource messageSource) {
         this.idempotencyRepository = idempotencyRepository;
+        this.messageSource = messageSource;
     }
 
     @Override
@@ -114,10 +118,14 @@ public class IdempotencyFilter implements Filter {
         response.setStatus(HttpServletResponse.SC_CONFLICT);
         response.setContentType("application/json");
 
+        String message = messageSource.getMessage("error.idempotency.conflict", null,
+                "A request with this idempotency key is already being processed",
+                LocaleContextHolder.getLocale());
+
         String json = "{\"timestamp\":\"" + LocalDateTime.now() + "\","
                 + "\"status\":409,"
                 + "\"error\":\"Conflict\","
-                + "\"message\":\"A request with this idempotency key is already being processed\"}";
+                + "\"message\":\"" + message + "\"}";
 
         response.getWriter().write(json);
     }

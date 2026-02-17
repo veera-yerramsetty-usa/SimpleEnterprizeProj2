@@ -60,7 +60,7 @@ public class WebhookService {
     @Retry(name = "webhookService")
     public WebhookRegistration findEntityById(Long id) {
         return webhookRegistrationRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Webhook not found with id " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("error.not.found.webhook", id));
     }
 
     @CircuitBreaker(name = "webhookService", fallbackMethod = "createFallback")

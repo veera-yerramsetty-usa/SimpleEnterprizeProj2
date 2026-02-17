@@ -32,8 +32,9 @@
 22. [Feature 20 — Async Processing](#22-feature-20--async-processing)
 23. [Feature 21 — Bulk Operations](#23-feature-21--bulk-operations)
 24. [Feature 22 — Webhook Support](#24-feature-22--webhook-support)
-25. [Cross-Cutting Concerns Summary](#25-cross-cutting-concerns-summary)
-26. [Full API Endpoint Reference](#26-full-api-endpoint-reference)
+25. [Feature 23 — Multi-language Support (i18n)](#25-feature-23--multi-language-support-i18n)
+26. [Cross-Cutting Concerns Summary](#26-cross-cutting-concerns-summary)
+27. [Full API Endpoint Reference](#27-full-api-endpoint-reference)
 
 ---
 
@@ -2239,9 +2240,121 @@ Added webhook support so external systems can subscribe to entity lifecycle even
 
 ---
 
-## 25. Cross-Cutting Concerns Summary
+## 25. Feature 23 — Multi-language Support (i18n)
 
-### How the 22 features interact
+### What it does
+Enables the API to return localized error messages (validation errors, exception responses, filter messages) based on the `Accept-Language` HTTP header. Default locale is English; Spanish is included as a second locale to demonstrate the mechanism.
+
+### Why it matters
+Multi-language support is a standard enterprise requirement for APIs serving international users. By externalizing all user-facing messages into resource bundles, adding a new language requires only a new `messages_xx.properties` file — zero code changes.
+
+### How it works
+
+**Configuration (`LocaleConfig.java`):**
+```java
+@Configuration
+public class LocaleConfig {
+    @Bean
+    public MessageSource messageSource() {
+        ReloadableResourceBundleMessageSource source = new ReloadableResourceBundleMessageSource();
+        source.setBasename("classpath:messages");
+        source.setDefaultEncoding("UTF-8");
+        return source;
+    }
+
+    @Bean
+    public LocaleResolver localeResolver() {
+        AcceptHeaderLocaleResolver resolver = new AcceptHeaderLocaleResolver();
+        resolver.setDefaultLocale(Locale.ENGLISH);
+        return resolver;
+    }
+
+    @Bean
+    public LocalValidatorFactoryBean validator(MessageSource messageSource) {
+        LocalValidatorFactoryBean bean = new LocalValidatorFactoryBean();
+        bean.setValidationMessageSource(messageSource);
+        return bean;
+    }
+}
+```
+
+**DTO validation messages** use `{key}` syntax (Jakarta Bean Validation standard):
+```java
+@NotBlank(message = "{validation.user.username.required}")
+@Size(max = 255, message = "{validation.user.username.size}")
+private String username;
+```
+
+**Service layer** throws `ResourceNotFoundException` with message code + args:
+```java
+.orElseThrow(() -> new ResourceNotFoundException("error.not.found.user", id));
+```
+
+**`GlobalExceptionHandler`** resolves messages via `MessageSource`:
+```java
+Locale locale = LocaleContextHolder.getLocale();
+String message = messageSource.getMessage(ex.getMessageCode(), ex.getMessageArgs(), ex.getMessage(), locale);
+```
+
+**Message bundles** (`messages.properties` / `messages_es.properties`):
+```properties
+# English (default)
+error.not.found.user=User not found with id {0}
+validation.user.username.required=Username is required
+
+# Spanish
+error.not.found.user=Usuario no encontrado con id {0}
+validation.user.username.required=El nombre de usuario es obligatorio
+```
+
+### Files created
+| File | Purpose |
+|---|---|
+| `LocaleConfig.java` | MessageSource, LocaleResolver, and LocalValidatorFactoryBean beans |
+| `messages.properties` | English (default) message bundle (~70 keys) |
+| `messages_es.properties` | Spanish translations for all keys |
+
+### Files modified
+| File | Change |
+|---|---|
+| `ResourceNotFoundException.java` | Added `messageCode` + `messageArgs` fields and varargs constructor |
+| `GlobalExceptionHandler.java` | Injected `MessageSource`; all 10 handlers resolve messages via bundle |
+| `IdempotencyFilter.java` | Conflict message resolved via `MessageSource` |
+| 9 DTO files | Replaced hardcoded messages with `{key}` references |
+| 4 Service files | `ResourceNotFoundException` now uses message codes |
+| `application.properties` | Added `spring.messages.basename=messages` |
+
+### Trade-offs
+
+| Decision | Pro | Con |
+|---|---|---|
+| `AcceptHeaderLocaleResolver` | Standard HTTP mechanism, stateless | No per-user persistence (rely on client header) |
+| `{key}` in validation annotations | Jakarta standard, auto-resolved by Hibernate Validator | Keys must match exactly between annotation and bundle |
+| Message codes in exceptions | Clean separation of resolution from business logic | Slightly more verbose than inline messages |
+| Log messages stay in English | Consistent for ops/debugging across all locales | Developers in non-English teams see English logs |
+
+### Interview Q&A
+
+**Q: Why not use `ResourceBundleMessageSource` instead of `ReloadableResourceBundleMessageSource`?**
+> `ReloadableResourceBundleMessageSource` supports hot-reloading of message files without restarting the application (useful in dev). It also supports `classpath:` prefixed basenames and configurable encoding. The reloading overhead is negligible — it only checks file timestamps periodically.
+
+**Q: How does `{key}` syntax work in validation annotations?**
+> Jakarta Bean Validation (JSR 380) specifies that curly-braced values in `message` attributes are interpolated as resource bundle keys. Hibernate Validator (the reference implementation) delegates to a `MessageInterpolator`. By wiring `MessageSource` into `LocalValidatorFactoryBean`, Spring routes key resolution through Spring's `MessageSource`, which reads from `messages.properties` bundles. Constraint attributes like `{max}`, `{min}`, `{value}` are also interpolated automatically.
+
+**Q: What happens if a message key is missing from the bundle?**
+> All `messageSource.getMessage()` calls in `GlobalExceptionHandler` use the 4-argument overload that includes a default message. If the key is missing, the default (English) message is returned. For validation annotations, Hibernate Validator falls back to the key string itself (e.g., `{validation.user.username.required}`).
+
+**Q: How would you add a third language (e.g., French)?**
+> Create `messages_fr.properties` with French translations for all keys. No code changes needed. The `AcceptHeaderLocaleResolver` automatically picks up `Accept-Language: fr` and resolves from the French bundle. If a key is missing in French, it falls back to the default (`messages.properties`).
+
+**Q: Why are log messages not internationalized?**
+> Internal logs are consumed by developers and operations teams using monitoring tools (ELK, Splunk, etc.). Consistent English logging ensures searchability and alerting rules work regardless of which locale triggered the request. Internationalizing logs would complicate log analysis and serve no user-facing benefit.
+
+---
+
+## 26. Cross-Cutting Concerns Summary
+
+### How the 23 features interact
 
 ```
 Request Flow:
@@ -2305,7 +2418,7 @@ Request Flow:
 
 ---
 
-## 26. Full API Endpoint Reference
+## 27. Full API Endpoint Reference
 
 ### User Endpoints
 

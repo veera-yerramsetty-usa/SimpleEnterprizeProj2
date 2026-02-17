@@ -60,7 +60,7 @@ public class DepartmentService {
     @Retry(name = "departmentService")
     public Department findEntityById(Long id) {
         return departmentRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Department not found with id " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("error.not.found.department", id));
     }
 
     @CircuitBreaker(name = "departmentService", fallbackMethod = "createFallback")
