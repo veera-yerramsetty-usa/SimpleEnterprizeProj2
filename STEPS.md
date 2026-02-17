@@ -78,3 +78,13 @@ Added **Resilience4j** circuit breakers to all three services (`UserService`, `E
 - `CallNotPermittedException` handler in `GlobalExceptionHandler` returns 503 Service Unavailable
 - One circuit breaker instance per service for isolated failure domains
 - All configuration externalized in `application.properties`
+
+## 15. Hibernate Second-Level Cache & Query Cache (`4a43cb2`)
+
+Added **Hibernate L2 cache** and **query cache** using EhCache 3 via hibernate-jcache, complementing the existing Redis application-level cache:
+- **Entity caching** — `@Cacheable` + `@Cache` on all entities: `READ_WRITE` for User/Employee, `NONSTRICT_READ_WRITE` for Department
+- **Query caching** — `@QueryHints(HINT_CACHEABLE)` on `findAll(Specification, Pageable)` and `findById` in all repositories
+- **EhCache regions** — User (1000 entries), Employee (2000), Department (200) with 10-min TTL; query results (500) with 5-min TTL; update timestamps (5000) with no expiry
+- **ENABLE_SELECTIVE** shared cache mode — only annotated entities are cached
+- **Profile-aware statistics** — `hibernate.generate_statistics=true` in dev, disabled in prod
+- `HibernateCacheConfig` resolves ehcache.xml classpath URI for Hibernate's JCache integration
