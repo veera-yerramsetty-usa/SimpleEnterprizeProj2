@@ -27,8 +27,9 @@
 17. [Feature 15 — Observability (Logging, Correlation IDs, Security Headers)](#17-feature-15--observability-logging-correlation-ids-security-headers)
 18. [Feature 16 — Resilience4j Retry & Fallback](#18-feature-16--resilience4j-retry--fallback)
 19. [Feature 17 — Resilience4j Bulkhead (Concurrency Limiter)](#19-feature-17--resilience4j-bulkhead-concurrency-limiter)
-20. [Cross-Cutting Concerns Summary](#20-cross-cutting-concerns-summary)
-21. [Full API Endpoint Reference](#21-full-api-endpoint-reference)
+20. [Feature 18 — POST Idempotency](#20-feature-18--post-idempotency)
+21. [Cross-Cutting Concerns Summary](#21-cross-cutting-concerns-summary)
+22. [Full API Endpoint Reference](#22-full-api-endpoint-reference)
 
 ---
 
@@ -1659,32 +1660,201 @@ Call → CircuitBreaker (check state)
 
 ---
 
-## 20. Cross-Cutting Concerns Summary
+## 20. Feature 18 — POST Idempotency
 
-### How the 17 features interact
+### What was done
+Added a servlet filter (`IdempotencyFilter`) that makes POST endpoints idempotent via an optional `Idempotency-Key` HTTP header. When a client retries a POST with the same key, the filter replays the original response instead of creating a duplicate resource. Uses H2-backed JPA storage (no Redis dependency) with a scheduled cleanup task.
+
+### Why (Architect perspective)
+- **Safe retries**: Network failures, timeouts, and load balancer retries can cause a single user action to hit the server multiple times. Without idempotency, each retry creates a duplicate resource. The `Idempotency-Key` header lets clients safely retry POSTs with deterministic outcomes.
+- **Opt-in design**: The header is optional — existing clients work unchanged. Only clients that send the header get idempotency protection. This follows the Stripe API pattern.
+- **POST only**: PUT, PATCH, and DELETE are already idempotent by HTTP specification. POST is the only non-idempotent method that creates resources.
+- **Filter vs. interceptor**: A servlet filter runs before Spring MVC dispatching, ensuring idempotency checks happen at the earliest possible point — before validation, service logic, or database writes.
+
+### How (Developer perspective)
+
+**`IdempotencyFilter.java`** — `src/main/java/.../config/IdempotencyFilter.java`:
+```java
+@Component
+@Order(10)
+public class IdempotencyFilter implements Filter {
+
+    private final IdempotencyRepository idempotencyRepository;
+    private final ObjectMapper objectMapper;
+
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+            throws IOException, ServletException {
+        HttpServletRequest httpRequest = (HttpServletRequest) request;
+
+        // Only intercept POST requests with Idempotency-Key header
+        if (!"POST".equalsIgnoreCase(httpRequest.getMethod())) { chain.doFilter(...); return; }
+        String key = httpRequest.getHeader("Idempotency-Key");
+        if (key == null || key.isBlank()) { chain.doFilter(...); return; }
+
+        // Check for existing record
+        Optional<IdempotencyRecord> existing = repository.findByIdempotencyKey(key);
+        if (existing.isPresent()) {
+            if (record.getStatusCode() != null) replayResponse(response, record);  // Completed → replay
+            else writeConflictResponse(response);                                   // In-progress → 409
+            return;
+        }
+
+        // Insert placeholder (statusCode=null means in-progress)
+        try { repository.save(new IdempotencyRecord(key, path, now)); }
+        catch (DataIntegrityViolationException e) { writeConflictResponse(response); return; }
+
+        // Execute request with response caching
+        ContentCachingResponseWrapper wrapper = new ContentCachingResponseWrapper(response);
+        try {
+            chain.doFilter(request, wrapper);
+            if (wrapper.getStatus() >= 500) repository.delete(record);     // 5xx → allow retry
+            else { record.setStatusCode(status); record.setResponseBody(body); repository.save(record); }
+        } catch (Exception e) { repository.delete(record); throw e; }      // Exception → allow retry
+        wrapper.copyBodyToResponse();
+    }
+}
+```
+
+**`IdempotencyRecord.java`** — `src/main/java/.../model/IdempotencyRecord.java`:
+```java
+@Entity
+@Table(name = "idempotency_keys")
+public class IdempotencyRecord {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "idempotency_key", nullable = false, unique = true)
+    private String idempotencyKey;
+
+    @Column(name = "request_path", length = 512)
+    private String requestPath;
+
+    @Column(name = "status_code")
+    private Integer statusCode;          // null = in-progress, non-null = completed
+
+    @Lob @Column(name = "response_body")
+    private String responseBody;
+
+    @Column(name = "content_type")
+    private String contentType;
+
+    @Column(name = "created_at", nullable = false)
+    private LocalDateTime createdAt;
+}
+```
+
+**`IdempotencyCleanupScheduler.java`** — `src/main/java/.../config/IdempotencyCleanupScheduler.java`:
+```java
+@Component
+public class IdempotencyCleanupScheduler {
+    @Scheduled(fixedRate = 3600000)  // Every hour
+    @Transactional
+    public void cleanupExpiredKeys() {
+        idempotencyRepository.deleteByCreatedAtBefore(LocalDateTime.now().minusHours(24));
+    }
+}
+```
+
+**Filter ordering**:
+
+| Order | Filter | Purpose |
+|-------|--------|---------|
+| 0 | `SecurityHeadersFilter` | Security headers on ALL responses (including replayed/409) |
+| 5 | `RequestLoggingFilter` | Log all requests including replays; sets MDC correlationId |
+| 10 | `IdempotencyFilter` | Short-circuited responses still get headers + logging |
+
+**Request flow**:
+```
+POST with Idempotency-Key header:
+1. Filter checks DB for existing key
+   a. Found + completed (statusCode != null) → replay stored response
+   b. Found + in-progress (statusCode == null) → 409 Conflict
+   c. Not found → INSERT placeholder (statusCode=null), proceed
+2. Wrap response with ContentCachingResponseWrapper
+3. Execute request via chain.doFilter()
+4. Capture response → UPDATE record with statusCode, body, contentType
+5. On 5xx failure → DELETE record (allow client retry)
+6. On exception → DELETE record, re-throw
+```
+
+**Liquibase migration** — `004-add-idempotency-keys.yaml`:
+```yaml
+- createTable:
+    tableName: idempotency_keys
+    columns:
+      - column: { name: id, type: BIGINT, autoIncrement: true, primaryKey: true }
+      - column: { name: idempotency_key, type: VARCHAR(255), unique: true, nullable: false }
+      - column: { name: request_path, type: VARCHAR(512) }
+      - column: { name: status_code, type: INT }               # nullable (null = in-progress)
+      - column: { name: response_body, type: CLOB }
+      - column: { name: content_type, type: VARCHAR(255) }
+      - column: { name: created_at, type: TIMESTAMP, nullable: false }
+- createIndex: { tableName: idempotency_keys, indexName: idx_idempotency_keys_created_at, columns: [created_at] }
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| H2/JPA storage | Redis, in-memory `ConcurrentHashMap` | H2 is already available (no new dependency). Survives restarts. Redis would be better for distributed deployments but adds infrastructure complexity |
+| Optional `Idempotency-Key` header | Mandatory header on all POSTs | Opt-in avoids breaking existing clients. Stripe, PayPal, and other payment APIs use this pattern |
+| UNIQUE constraint for concurrency | `SELECT FOR UPDATE`, distributed lock | UNIQUE constraint is the simplest race-condition handler — the DB does the locking. `DataIntegrityViolationException` on duplicate insert is caught and returns 409 |
+| Delete record on 5xx | Keep record, return same 5xx on replay | 5xx errors are transient (DB down, timeout). Deleting the record allows the client to retry the same key and potentially succeed. Keeping it would permanently block retries |
+| `Integer` (boxed) for statusCode | `int` (primitive) with sentinel value (-1) | Boxed `Integer` allows `null` to distinguish "in-progress" from "completed". A sentinel value is error-prone and requires documentation |
+| 24-hour TTL with hourly cleanup | Shorter TTL, event-driven cleanup | 24 hours is long enough for clients to retry within a reasonable window. Hourly cleanup is simple and predictable |
+| `ContentCachingResponseWrapper` | Custom response wrapper, `TeeOutputStream` | Spring's built-in wrapper is well-tested, handles edge cases (character encoding, content length), and requires no custom code |
+| No `@Cacheable`/`@Cache` on entity | L2 cache for fast lookups | Idempotency records are write-heavy, short-lived, and rarely read more than once. Caching would waste memory on entries that are never re-read |
+
+### Interview talking points
+
+**Q: Why is idempotency needed if the database has unique constraints?**
+> Unique constraints prevent *data* duplication (e.g., two users with the same email), but they don't prevent *semantic* duplication. For example, creating two orders with different IDs but the same items because the client retried. Idempotency ensures the entire operation (including side effects like sending emails, charging payments) happens exactly once.
+
+**Q: How do you handle concurrent requests with the same idempotency key?**
+> The UNIQUE constraint on `idempotency_key` handles the race condition at the database level. If two threads try to INSERT the same key simultaneously, one succeeds and the other gets a `DataIntegrityViolationException`, which the filter catches and returns 409 Conflict. The successful thread's placeholder record (statusCode=null) signals "in-progress" to any subsequent lookups.
+
+**Q: Why delete the record on 5xx instead of storing the error?**
+> 5xx errors are transient (database timeout, out of memory, network partition). If we stored the 5xx response, retrying with the same key would replay the error forever — the client could never recover. Deleting the record allows the client to retry the same key, and the next attempt may succeed if the transient issue has resolved.
+
+**Q: What about idempotency for non-POST methods?**
+> PUT is idempotent by definition (same PUT = same result). PATCH is technically not idempotent in the general case, but in this project's implementation (field-level partial updates), it is effectively idempotent. DELETE is idempotent (deleting twice = same state). Only POST creates new resources, so only POST needs explicit idempotency protection.
+
+**Q: How would you scale this to a distributed system?**
+> Replace H2 storage with Redis (`SET NX EX` for atomic insert-if-not-exists with TTL) or a shared database. Redis is ideal because `SET key value NX EX 86400` atomically creates a key only if it doesn't exist, with a 24-hour expiry — no separate cleanup task needed. For very high throughput, consider a Bloom filter for fast "definitely not seen" checks before hitting the database.
+
+**Q: Why a filter instead of a Spring interceptor or AOP aspect?**
+> A servlet filter runs before Spring MVC dispatching, at the earliest point in the request lifecycle. An interceptor would run after `DispatcherServlet` has matched a handler, wasting work on duplicate requests. An AOP aspect would require annotation on each controller method. The filter is global, transparent, and catches all POST endpoints without code changes.
+
+---
+
+## 21. Cross-Cutting Concerns Summary
+
+### How the 18 features interact
 
 ```
 Request Flow:
 1. HTTP Request arrives
-2. SecurityHeadersFilter adds response headers
-3. RequestLoggingFilter generates correlationId, starts timer
-4. @Validated controller validates @RequestParam (ConstraintViolationException → 400)
-5. @Valid validates @RequestBody (MethodArgumentNotValidException → 400)
-6. Controller calls Service method
-7. @CircuitBreaker checks circuit state (OPEN → fallbackMethod → 503 or Page.empty)
-8. @Bulkhead checks permits (FULL → BulkheadFullException → 429)
-9. @Retry attempts call (up to 3x with exponential backoff on failure)
-10. @Cacheable checks Redis (hit → return cached DTO, skip steps 11-15)
-11. @Transactional opens/joins transaction
-12. Repository executes query with Specification filters
-13. @QueryHints checks Hibernate query cache (hit → return entity IDs from EhCache)
-14. Hibernate checks L2 entity cache (hit → return cached entity, no SQL)
-15. If cache miss → SQL executes against H2 (schema managed by Liquibase)
-16. Mapper converts Entity → Response DTO (with sanitization on writes)
-17. HATEOAS links added by controller
-18. Response returned
-19. RequestLoggingFilter logs method, URI, status, duration
-20. GlobalExceptionHandler catches any exceptions → consistent JSON error
+2. SecurityHeadersFilter (@Order 0) adds response headers
+3. RequestLoggingFilter (@Order 5) generates correlationId, starts timer
+4. IdempotencyFilter (@Order 10) checks Idempotency-Key header (POST only → replay/409/proceed)
+5. @Validated controller validates @RequestParam (ConstraintViolationException → 400)
+6. @Valid validates @RequestBody (MethodArgumentNotValidException → 400)
+7. Controller calls Service method
+8. @CircuitBreaker checks circuit state (OPEN → fallbackMethod → 503 or Page.empty)
+9. @Bulkhead checks permits (FULL → BulkheadFullException → 429)
+10. @Retry attempts call (up to 3x with exponential backoff on failure)
+11. @Cacheable checks Redis (hit → return cached DTO, skip steps 12-16)
+12. @Transactional opens/joins transaction
+13. Repository executes query with Specification filters
+14. @QueryHints checks Hibernate query cache (hit → return entity IDs from EhCache)
+15. Hibernate checks L2 entity cache (hit → return cached entity, no SQL)
+16. If cache miss → SQL executes against H2 (schema managed by Liquibase)
+17. Mapper converts Entity → Response DTO (with sanitization on writes)
+18. HATEOAS links added by controller
+19. Response returned (IdempotencyFilter stores response for POST with key)
+20. RequestLoggingFilter logs method, URI, status, duration
+21. GlobalExceptionHandler catches any exceptions → consistent JSON error
 ```
 
 ### Cache layers (from fastest to slowest)
@@ -1721,7 +1891,7 @@ Request Flow:
 
 ---
 
-## 21. Full API Endpoint Reference
+## 22. Full API Endpoint Reference
 
 ### User Endpoints
 
@@ -1813,4 +1983,4 @@ public class DatabaseConfig {
 
 ---
 
-*This document covers all 17 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*
+*This document covers all 18 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*

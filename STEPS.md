@@ -108,3 +108,15 @@ Added **Resilience4j Semaphore Bulkhead** to limit concurrent calls per service,
 - `maxWaitDuration=0ms` — fail-fast when bulkhead is full (no queuing)
 - Updated decorator ordering: `CircuitBreaker(1)` → `Bulkhead(2147483646, hardcoded)` → `Retry(2147483647)` — each retry attempt holds a permit
 - `BulkheadFullException` → 429 Too Many Requests via `GlobalExceptionHandler`
+
+## 18. POST Idempotency (`dev`)
+
+Added **idempotency protection** for POST endpoints via an `Idempotency-Key` HTTP header, preventing duplicate resource creation on retries:
+- **`IdempotencyFilter`** (`@Order(10)`) — servlet filter that intercepts POST requests with an `Idempotency-Key` header, stores/replays responses using H2-backed JPA storage
+- **Opt-in**: header is optional — absent header processes normally; PUT/PATCH/DELETE are already idempotent by HTTP spec
+- **Concurrency safety**: UNIQUE constraint + `DataIntegrityViolationException` catch handles race conditions (concurrent identical keys → 409 Conflict)
+- **5xx handling**: deletes idempotency record on server errors so clients can safely retry transient failures
+- **Filter ordering**: `SecurityHeadersFilter(0)` → `RequestLoggingFilter(5)` → `IdempotencyFilter(10)` — short-circuited responses still get security headers and logging
+- **`IdempotencyCleanupScheduler`** — `@Scheduled` hourly task deletes records older than 24 hours
+- **`@EnableScheduling`** added to application class
+- Liquibase migration `004-add-idempotency-keys.yaml` creates `idempotency_keys` table with UNIQUE constraint and `created_at` index

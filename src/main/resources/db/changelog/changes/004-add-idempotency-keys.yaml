@@ -1,0 +1,45 @@
+databaseChangeLog:
+  - changeSet:
+      id: "004"
+      author: "developer"
+      changes:
+        - createTable:
+            tableName: idempotency_keys
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: idempotency_key
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+                    uniqueConstraintName: uq_idempotency_key
+                    unique: true
+              - column:
+                  name: request_path
+                  type: VARCHAR(512)
+              - column:
+                  name: status_code
+                  type: INT
+              - column:
+                  name: response_body
+                  type: CLOB
+              - column:
+                  name: content_type
+                  type: VARCHAR(255)
+              - column:
+                  name: created_at
+                  type: TIMESTAMP
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: idempotency_keys
+            indexName: idx_idempotency_keys_created_at
+            columns:
+              - column:
+                  name: created_at

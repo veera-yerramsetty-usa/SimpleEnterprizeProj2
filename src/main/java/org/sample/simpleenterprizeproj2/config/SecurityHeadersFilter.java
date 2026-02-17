@@ -2,6 +2,7 @@ package org.sample.simpleenterprizeproj2.config;
 
 import java.io.IOException;
 
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import jakarta.servlet.Filter;
@@ -12,6 +13,7 @@ import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletResponse;
 
 @Component
+@Order(0)
 public class SecurityHeadersFilter implements Filter {
 
     @Override
