@@ -7,7 +7,9 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Size;
+import org.sample.simpleenterprizeproj2.dto.BulkUpdateRequest;
 import org.sample.simpleenterprizeproj2.dto.DepartmentPatchRequest;
 import org.sample.simpleenterprizeproj2.dto.DepartmentRequest;
 import org.sample.simpleenterprizeproj2.dto.DepartmentResponse;
@@ -23,6 +25,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.net.URI;
+import java.util.List;
 
 import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.linkTo;
 import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.methodOn;
@@ -130,6 +133,59 @@ public class DepartmentController {
     public ResponseEntity<Void> delete(
             @Parameter(description = "Department ID") @PathVariable Long id) {
         departmentService.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/bulk")
+    @Operation(summary = "Bulk create departments", description = "Create multiple departments in a single request")
+    @ApiResponse(responseCode = "201", description = "Departments created successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid request body",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "409", description = "Department with given unique field(s) already exists",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    public ResponseEntity<List<EntityModel<DepartmentResponse>>> bulkCreate(
+            @RequestBody @NotEmpty @Size(max = 100) List<@Valid DepartmentRequest> requests) {
+        List<DepartmentResponse> responses = departmentService.bulkCreate(requests);
+        List<EntityModel<DepartmentResponse>> models = responses.stream()
+                .map(this::toEntityModel)
+                .toList();
+        return ResponseEntity.status(201).body(models);
+    }
+
+    @PutMapping("/bulk")
+    @Operation(summary = "Bulk update departments", description = "Update multiple departments in a single request")
+    @ApiResponse(responseCode = "200", description = "Departments updated successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid request body",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "404", description = "Department not found",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "409", description = "Department with given unique field(s) already exists",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    public ResponseEntity<List<EntityModel<DepartmentResponse>>> bulkUpdate(
+            @RequestBody @NotEmpty @Size(max = 100) List<@Valid BulkUpdateRequest<DepartmentRequest>> requests) {
+        List<DepartmentResponse> responses = departmentService.bulkUpdate(requests);
+        List<EntityModel<DepartmentResponse>> models = responses.stream()
+                .map(this::toEntityModel)
+                .toList();
+        return ResponseEntity.ok(models);
+    }
+
+    @DeleteMapping("/bulk")
+    @Operation(summary = "Bulk delete departments", description = "Delete multiple departments in a single request")
+    @ApiResponse(responseCode = "204", description = "Departments deleted successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid request body",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "404", description = "Department not found",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    public ResponseEntity<Void> bulkDelete(
+            @RequestBody @NotEmpty @Size(max = 100) List<Long> ids) {
+        departmentService.bulkDelete(ids);
         return ResponseEntity.noContent().build();
     }
 

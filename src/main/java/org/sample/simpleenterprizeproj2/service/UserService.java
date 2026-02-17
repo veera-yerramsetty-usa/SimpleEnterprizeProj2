@@ -1,5 +1,6 @@
 package org.sample.simpleenterprizeproj2.service;
 
+import org.sample.simpleenterprizeproj2.dto.BulkUpdateRequest;
 import org.sample.simpleenterprizeproj2.dto.UserPatchRequest;
 import org.sample.simpleenterprizeproj2.dto.UserRequest;
 import org.sample.simpleenterprizeproj2.dto.UserResponse;
@@ -21,6 +22,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Service
 @Transactional(readOnly = true)
@@ -118,6 +122,67 @@ public class UserService {
         asyncNotificationService.notifyResourceDeleted("User", id);
     }
 
+    @CircuitBreaker(name = "userService", fallbackMethod = "bulkCreateFallback")
+    @Bulkhead(name = "userService")
+    @Retry(name = "userService")
+    @Transactional
+    @CacheEvict(value = CACHE_NAME, allEntries = true)
+    public List<UserResponse> bulkCreate(List<UserRequest> requests) {
+        List<User> entities = new ArrayList<>(requests.size());
+        for (UserRequest request : requests) {
+            entities.add(userMapper.toEntity(request));
+        }
+        List<User> saved = userRepository.saveAll(entities);
+        List<UserResponse> responses = new ArrayList<>(saved.size());
+        for (User user : saved) {
+            responses.add(userMapper.toResponse(user));
+            log.info("Created user id={}", user.getId());
+            asyncNotificationService.notifyResourceCreated("User", user.getId());
+        }
+        return responses;
+    }
+
+    @CircuitBreaker(name = "userService", fallbackMethod = "bulkUpdateFallback")
+    @Bulkhead(name = "userService")
+    @Retry(name = "userService")
+    @Transactional
+    @CacheEvict(value = CACHE_NAME, allEntries = true)
+    public List<UserResponse> bulkUpdate(List<BulkUpdateRequest<UserRequest>> requests) {
+        List<User> entities = new ArrayList<>(requests.size());
+        for (BulkUpdateRequest<UserRequest> request : requests) {
+            User user = findEntityById(request.getId());
+            userMapper.updateEntity(user, request.getData());
+            entities.add(user);
+        }
+        List<User> saved = userRepository.saveAll(entities);
+        List<UserResponse> responses = new ArrayList<>(saved.size());
+        for (User user : saved) {
+            responses.add(userMapper.toResponse(user));
+            log.info("Updated user id={}", user.getId());
+            asyncNotificationService.notifyResourceUpdated("User", user.getId());
+        }
+        return responses;
+    }
+
+    @CircuitBreaker(name = "userService", fallbackMethod = "bulkDeleteFallback")
+    @Bulkhead(name = "userService")
+    @Retry(name = "userService")
+    @Transactional
+    @CacheEvict(value = CACHE_NAME, allEntries = true)
+    public void bulkDelete(List<Long> ids) {
+        List<User> entities = new ArrayList<>(ids.size());
+        for (Long id : ids) {
+            User user = findEntityById(id);
+            user.setDeleted(true);
+            entities.add(user);
+        }
+        userRepository.saveAll(entities);
+        for (User user : entities) {
+            log.info("Soft-deleted user id={}", user.getId());
+            asyncNotificationService.notifyResourceDeleted("User", user.getId());
+        }
+    }
+
     // ── Fallback methods ──────────────────────────────────────────────
 
     private Page<UserResponse> findAllFallback(String username, String email, String role,
@@ -153,6 +218,21 @@ public class UserService {
 
     private void deleteFallback(Long id, Throwable t) {
         log.warn("Fallback for delete(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("User service is temporarily unavailable", t);
+    }
+
+    private List<UserResponse> bulkCreateFallback(List<UserRequest> requests, Throwable t) {
+        log.warn("Fallback for bulkCreate triggered: {}", t.getMessage());
+        throw new ServiceUnavailableException("User service is temporarily unavailable", t);
+    }
+
+    private List<UserResponse> bulkUpdateFallback(List<BulkUpdateRequest<UserRequest>> requests, Throwable t) {
+        log.warn("Fallback for bulkUpdate triggered: {}", t.getMessage());
+        throw new ServiceUnavailableException("User service is temporarily unavailable", t);
+    }
+
+    private void bulkDeleteFallback(List<Long> ids, Throwable t) {
+        log.warn("Fallback for bulkDelete triggered: {}", t.getMessage());
         throw new ServiceUnavailableException("User service is temporarily unavailable", t);
     }
 }

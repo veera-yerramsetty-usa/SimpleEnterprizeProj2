@@ -1,5 +1,6 @@
 package org.sample.simpleenterprizeproj2.service;
 
+import org.sample.simpleenterprizeproj2.dto.BulkUpdateRequest;
 import org.sample.simpleenterprizeproj2.dto.DepartmentPatchRequest;
 import org.sample.simpleenterprizeproj2.dto.DepartmentRequest;
 import org.sample.simpleenterprizeproj2.dto.DepartmentResponse;
@@ -18,6 +19,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Service
 @Transactional(readOnly = true)
@@ -109,6 +113,64 @@ public class DepartmentService {
         asyncNotificationService.notifyResourceDeleted("Department", id);
     }
 
+    @CircuitBreaker(name = "departmentService", fallbackMethod = "bulkCreateFallback")
+    @Bulkhead(name = "departmentService")
+    @Retry(name = "departmentService")
+    @Transactional
+    public List<DepartmentResponse> bulkCreate(List<DepartmentRequest> requests) {
+        List<Department> entities = new ArrayList<>(requests.size());
+        for (DepartmentRequest request : requests) {
+            entities.add(departmentMapper.toEntity(request));
+        }
+        List<Department> saved = departmentRepository.saveAll(entities);
+        List<DepartmentResponse> responses = new ArrayList<>(saved.size());
+        for (Department department : saved) {
+            responses.add(departmentMapper.toResponse(department));
+            log.info("Created department id={}", department.getId());
+            asyncNotificationService.notifyResourceCreated("Department", department.getId());
+        }
+        return responses;
+    }
+
+    @CircuitBreaker(name = "departmentService", fallbackMethod = "bulkUpdateFallback")
+    @Bulkhead(name = "departmentService")
+    @Retry(name = "departmentService")
+    @Transactional
+    public List<DepartmentResponse> bulkUpdate(List<BulkUpdateRequest<DepartmentRequest>> requests) {
+        List<Department> entities = new ArrayList<>(requests.size());
+        for (BulkUpdateRequest<DepartmentRequest> request : requests) {
+            Department department = findEntityById(request.getId());
+            departmentMapper.updateEntity(department, request.getData());
+            entities.add(department);
+        }
+        List<Department> saved = departmentRepository.saveAll(entities);
+        List<DepartmentResponse> responses = new ArrayList<>(saved.size());
+        for (Department department : saved) {
+            responses.add(departmentMapper.toResponse(department));
+            log.info("Updated department id={}", department.getId());
+            asyncNotificationService.notifyResourceUpdated("Department", department.getId());
+        }
+        return responses;
+    }
+
+    @CircuitBreaker(name = "departmentService", fallbackMethod = "bulkDeleteFallback")
+    @Bulkhead(name = "departmentService")
+    @Retry(name = "departmentService")
+    @Transactional
+    public void bulkDelete(List<Long> ids) {
+        List<Department> entities = new ArrayList<>(ids.size());
+        for (Long id : ids) {
+            Department department = findEntityById(id);
+            department.setDeleted(true);
+            entities.add(department);
+        }
+        departmentRepository.saveAll(entities);
+        for (Department department : entities) {
+            log.info("Soft-deleted department id={}", department.getId());
+            asyncNotificationService.notifyResourceDeleted("Department", department.getId());
+        }
+    }
+
     // ── Fallback methods ──────────────────────────────────────────────
 
     private Page<DepartmentResponse> findAllFallback(String name, Pageable pageable, Throwable t) {
@@ -143,6 +205,21 @@ public class DepartmentService {
 
     private void deleteFallback(Long id, Throwable t) {
         log.warn("Fallback for delete(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("Department service is temporarily unavailable", t);
+    }
+
+    private List<DepartmentResponse> bulkCreateFallback(List<DepartmentRequest> requests, Throwable t) {
+        log.warn("Fallback for bulkCreate triggered: {}", t.getMessage());
+        throw new ServiceUnavailableException("Department service is temporarily unavailable", t);
+    }
+
+    private List<DepartmentResponse> bulkUpdateFallback(List<BulkUpdateRequest<DepartmentRequest>> requests, Throwable t) {
+        log.warn("Fallback for bulkUpdate triggered: {}", t.getMessage());
+        throw new ServiceUnavailableException("Department service is temporarily unavailable", t);
+    }
+
+    private void bulkDeleteFallback(List<Long> ids, Throwable t) {
+        log.warn("Fallback for bulkDelete triggered: {}", t.getMessage());
         throw new ServiceUnavailableException("Department service is temporarily unavailable", t);
     }
 }

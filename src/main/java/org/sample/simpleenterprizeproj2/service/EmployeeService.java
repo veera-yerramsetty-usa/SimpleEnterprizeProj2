@@ -1,5 +1,6 @@
 package org.sample.simpleenterprizeproj2.service;
 
+import org.sample.simpleenterprizeproj2.dto.BulkUpdateRequest;
 import org.sample.simpleenterprizeproj2.dto.EmployeePatchRequest;
 import org.sample.simpleenterprizeproj2.dto.EmployeeRequest;
 import org.sample.simpleenterprizeproj2.dto.EmployeeResponse;
@@ -19,6 +20,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Service
 @Transactional(readOnly = true)
@@ -119,6 +123,67 @@ public class EmployeeService {
         asyncNotificationService.notifyResourceDeleted("Employee", id);
     }
 
+    @CircuitBreaker(name = "employeeService", fallbackMethod = "bulkCreateFallback")
+    @Bulkhead(name = "employeeService")
+    @Retry(name = "employeeService")
+    @Transactional
+    public List<EmployeeResponse> bulkCreate(List<EmployeeRequest> requests) {
+        List<Employee> entities = new ArrayList<>(requests.size());
+        for (EmployeeRequest request : requests) {
+            Employee employee = employeeMapper.toEntity(request);
+            resolveDepartment(employee, request.getDepartmentId());
+            entities.add(employee);
+        }
+        List<Employee> saved = employeeRepository.saveAll(entities);
+        List<EmployeeResponse> responses = new ArrayList<>(saved.size());
+        for (Employee employee : saved) {
+            responses.add(employeeMapper.toResponse(employee));
+            log.info("Created employee id={}", employee.getId());
+            asyncNotificationService.notifyResourceCreated("Employee", employee.getId());
+        }
+        return responses;
+    }
+
+    @CircuitBreaker(name = "employeeService", fallbackMethod = "bulkUpdateFallback")
+    @Bulkhead(name = "employeeService")
+    @Retry(name = "employeeService")
+    @Transactional
+    public List<EmployeeResponse> bulkUpdate(List<BulkUpdateRequest<EmployeeRequest>> requests) {
+        List<Employee> entities = new ArrayList<>(requests.size());
+        for (BulkUpdateRequest<EmployeeRequest> request : requests) {
+            Employee employee = findEntityById(request.getId());
+            employeeMapper.updateEntity(employee, request.getData());
+            resolveDepartment(employee, request.getData().getDepartmentId());
+            entities.add(employee);
+        }
+        List<Employee> saved = employeeRepository.saveAll(entities);
+        List<EmployeeResponse> responses = new ArrayList<>(saved.size());
+        for (Employee employee : saved) {
+            responses.add(employeeMapper.toResponse(employee));
+            log.info("Updated employee id={}", employee.getId());
+            asyncNotificationService.notifyResourceUpdated("Employee", employee.getId());
+        }
+        return responses;
+    }
+
+    @CircuitBreaker(name = "employeeService", fallbackMethod = "bulkDeleteFallback")
+    @Bulkhead(name = "employeeService")
+    @Retry(name = "employeeService")
+    @Transactional
+    public void bulkDelete(List<Long> ids) {
+        List<Employee> entities = new ArrayList<>(ids.size());
+        for (Long id : ids) {
+            Employee employee = findEntityById(id);
+            employee.setDeleted(true);
+            entities.add(employee);
+        }
+        employeeRepository.saveAll(entities);
+        for (Employee employee : entities) {
+            log.info("Soft-deleted employee id={}", employee.getId());
+            asyncNotificationService.notifyResourceDeleted("Employee", employee.getId());
+        }
+    }
+
     private void resolveDepartment(Employee employee, Long departmentId) {
         if (departmentId != null) {
             Department dept = departmentService.findEntityById(departmentId);
@@ -163,6 +228,21 @@ public class EmployeeService {
 
     private void deleteFallback(Long id, Throwable t) {
         log.warn("Fallback for delete(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("Employee service is temporarily unavailable", t);
+    }
+
+    private List<EmployeeResponse> bulkCreateFallback(List<EmployeeRequest> requests, Throwable t) {
+        log.warn("Fallback for bulkCreate triggered: {}", t.getMessage());
+        throw new ServiceUnavailableException("Employee service is temporarily unavailable", t);
+    }
+
+    private List<EmployeeResponse> bulkUpdateFallback(List<BulkUpdateRequest<EmployeeRequest>> requests, Throwable t) {
+        log.warn("Fallback for bulkUpdate triggered: {}", t.getMessage());
+        throw new ServiceUnavailableException("Employee service is temporarily unavailable", t);
+    }
+
+    private void bulkDeleteFallback(List<Long> ids, Throwable t) {
+        log.warn("Fallback for bulkDelete triggered: {}", t.getMessage());
         throw new ServiceUnavailableException("Employee service is temporarily unavailable", t);
     }
 }

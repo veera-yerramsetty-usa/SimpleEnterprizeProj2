@@ -137,3 +137,17 @@ Added **`@Async` task execution** to offload fire-and-forget notifications from 
 - **Service integration** — `UserService`, `EmployeeService`, and `DepartmentService` call `AsyncNotificationService` after create/update/patch/delete operations
 - **Profile-aware pool sizing** — dev: core=2, max=4, queue=50; prod: core=4, max=8, queue=100
 - **Graceful shutdown** — `spring.task.execution.shutdown.await-termination=true` ensures async tasks complete before JVM exit
+
+## 21. Bulk Operations (`dev`)
+
+Added **bulk create/update/delete endpoints** for all three resources, reducing N round-trips to a single HTTP request with all-or-nothing transactional semantics:
+- **`POST /api/v1/{resource}/bulk`** — bulk create up to 100 items, returns 201 with list of created resources
+- **`PUT /api/v1/{resource}/bulk`** — bulk update via `BulkUpdateRequest<T>` (id + data pairs), returns 200
+- **`DELETE /api/v1/{resource}/bulk`** — bulk soft-delete by list of IDs, returns 204
+- **`BulkUpdateRequest<T>`** — generic DTO with `@NotNull Long id` + `@NotNull @Valid T data`
+- **Dedicated service methods** with `saveAll()` — avoids self-invocation proxy bypass for Resilience4j annotations
+- **`@Size(max=100)` + `@NotEmpty`** on list parameters; `List<@Valid T>` for per-item validation
+- **Single `@Transactional`** per bulk operation — any failure rolls back the entire batch
+- **`findEntityById()` per item** in update/delete — preserves 404 contract (missing ID → rollback)
+- **`@CacheEvict(allEntries=true)`** on UserService bulk methods since `@CachePut` can't handle multiple keys
+- **Async notifications** fired per item (consistent with single-item behavior)

@@ -7,7 +7,9 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Size;
+import org.sample.simpleenterprizeproj2.dto.BulkUpdateRequest;
 import org.sample.simpleenterprizeproj2.dto.EmployeePatchRequest;
 import org.sample.simpleenterprizeproj2.dto.EmployeeRequest;
 import org.sample.simpleenterprizeproj2.dto.EmployeeResponse;
@@ -23,6 +25,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.net.URI;
+import java.util.List;
 
 import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.linkTo;
 import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.methodOn;
@@ -133,6 +136,59 @@ public class EmployeeController {
     public ResponseEntity<Void> delete(
             @Parameter(description = "Employee ID") @PathVariable Long id) {
         employeeService.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/bulk")
+    @Operation(summary = "Bulk create employees", description = "Create multiple employees in a single request")
+    @ApiResponse(responseCode = "201", description = "Employees created successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid request body",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "409", description = "Employee with given unique field(s) already exists",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    public ResponseEntity<List<EntityModel<EmployeeResponse>>> bulkCreate(
+            @RequestBody @NotEmpty @Size(max = 100) List<@Valid EmployeeRequest> requests) {
+        List<EmployeeResponse> responses = employeeService.bulkCreate(requests);
+        List<EntityModel<EmployeeResponse>> models = responses.stream()
+                .map(this::toEntityModel)
+                .toList();
+        return ResponseEntity.status(201).body(models);
+    }
+
+    @PutMapping("/bulk")
+    @Operation(summary = "Bulk update employees", description = "Update multiple employees in a single request")
+    @ApiResponse(responseCode = "200", description = "Employees updated successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid request body",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "404", description = "Employee not found",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "409", description = "Employee with given unique field(s) already exists",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    public ResponseEntity<List<EntityModel<EmployeeResponse>>> bulkUpdate(
+            @RequestBody @NotEmpty @Size(max = 100) List<@Valid BulkUpdateRequest<EmployeeRequest>> requests) {
+        List<EmployeeResponse> responses = employeeService.bulkUpdate(requests);
+        List<EntityModel<EmployeeResponse>> models = responses.stream()
+                .map(this::toEntityModel)
+                .toList();
+        return ResponseEntity.ok(models);
+    }
+
+    @DeleteMapping("/bulk")
+    @Operation(summary = "Bulk delete employees", description = "Delete multiple employees in a single request")
+    @ApiResponse(responseCode = "204", description = "Employees deleted successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid request body",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "404", description = "Employee not found",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    public ResponseEntity<Void> bulkDelete(
+            @RequestBody @NotEmpty @Size(max = 100) List<Long> ids) {
+        employeeService.bulkDelete(ids);
         return ResponseEntity.noContent().build();
     }
 

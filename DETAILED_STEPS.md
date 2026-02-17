@@ -30,8 +30,9 @@
 20. [Feature 18 — POST Idempotency](#20-feature-18--post-idempotency)
 21. [Feature 19 — Graceful Shutdown](#21-feature-19--graceful-shutdown)
 22. [Feature 20 — Async Processing](#22-feature-20--async-processing)
-23. [Cross-Cutting Concerns Summary](#23-cross-cutting-concerns-summary)
-24. [Full API Endpoint Reference](#24-full-api-endpoint-reference)
+23. [Feature 21 — Bulk Operations](#23-feature-21--bulk-operations)
+24. [Cross-Cutting Concerns Summary](#24-cross-cutting-concerns-summary)
+25. [Full API Endpoint Reference](#25-full-api-endpoint-reference)
 
 ---
 
@@ -2055,9 +2056,106 @@ spring.task.execution.thread-name-prefix=async-
 
 ---
 
-## 23. Cross-Cutting Concerns Summary
+## 23. Feature 21 — Bulk Operations
 
-### How the 20 features interact
+### What was done
+Added dedicated bulk create, update, and delete endpoints (`POST/PUT/DELETE /api/v1/{resource}/bulk`) for all three resources (Users, Employees, Departments). Created a generic `BulkUpdateRequest<T>` DTO for update payloads. Each bulk operation runs in a single `@Transactional` with `saveAll()` for batch SQL, and fires per-item async notifications consistent with single-item behavior.
+
+### Why (Architect perspective)
+- **Network overhead reduction**: Clients creating 50 users previously needed 50 HTTP round-trips, 50 transactions, and 50 Resilience4j decorator invocations. A single bulk request reduces this to 1 round-trip, 1 transaction, and 1 decorator pass.
+- **Atomic batch semantics**: `@Transactional` wraps the entire batch — if item 47 of 50 fails validation or causes a constraint violation, all 50 are rolled back. This prevents partial-state scenarios that are difficult for clients to recover from.
+- **Batch SQL efficiency**: `saveAll()` allows Hibernate to batch INSERT/UPDATE statements (controlled by `hibernate.jdbc.batch_size`), reducing database round-trips within the transaction.
+- **Bounded input**: `@Size(max=100)` prevents unbounded batch sizes that could overwhelm the database connection pool, thread pool, or cause transaction timeouts.
+
+### How (Developer perspective)
+
+**`BulkUpdateRequest.java`** — `src/main/java/.../dto/BulkUpdateRequest.java`:
+```java
+public class BulkUpdateRequest<T> {
+    @NotNull(message = "ID is required")
+    private Long id;
+
+    @NotNull(message = "Data is required")
+    @Valid
+    private T data;
+}
+```
+
+**Service methods** (same pattern in all three services, UserService shown):
+```java
+@CircuitBreaker(name = "userService", fallbackMethod = "bulkCreateFallback")
+@Bulkhead(name = "userService")
+@Retry(name = "userService")
+@Transactional
+@CacheEvict(value = CACHE_NAME, allEntries = true)  // UserService only
+public List<UserResponse> bulkCreate(List<UserRequest> requests) {
+    List<User> entities = new ArrayList<>(requests.size());
+    for (UserRequest request : requests) {
+        entities.add(userMapper.toEntity(request));
+    }
+    List<User> saved = userRepository.saveAll(entities);
+    List<UserResponse> responses = new ArrayList<>(saved.size());
+    for (User user : saved) {
+        responses.add(userMapper.toResponse(user));
+        asyncNotificationService.notifyResourceCreated("User", user.getId());
+    }
+    return responses;
+}
+```
+
+**Controller endpoints** (same pattern in all three controllers):
+```java
+@PostMapping("/bulk")
+public ResponseEntity<List<EntityModel<UserResponse>>> bulkCreate(
+        @RequestBody @NotEmpty @Size(max = 100) List<@Valid UserRequest> requests) {
+    List<UserResponse> responses = userService.bulkCreate(requests);
+    List<EntityModel<UserResponse>> models = responses.stream()
+            .map(this::toEntityModel).toList();
+    return ResponseEntity.status(201).body(models);
+}
+```
+
+**Key differences between services:**
+
+| Service | bulkCreate extra step | bulkUpdate extra step | Cache annotation |
+|---|---|---|---|
+| `UserService` | — | — | `@CacheEvict(allEntries=true)` |
+| `EmployeeService` | `resolveDepartment()` | `resolveDepartment()` | None |
+| `DepartmentService` | — | — | None |
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Dedicated `bulkCreate`/`bulkUpdate`/`bulkDelete` methods | Delegate to existing single-item `create()`/`update()`/`delete()` | Self-invocation within the same class bypasses Spring proxies — Resilience4j `@CircuitBreaker`, `@Bulkhead`, `@Retry` annotations would not fire. Dedicated methods also enable `saveAll()` for batch SQL |
+| `findEntityById()` per item | `findAllById()` for batch lookup | `findAllById()` silently skips missing IDs (returns fewer results). Per-item lookup preserves the 404 contract with a specific "not found with id X" message, and rolls back the entire batch |
+| `@CacheEvict(allEntries=true)` on UserService | `@CachePut` per item | `@CachePut` can't handle list return types with multiple cache keys. Full eviction is simple and correct — subsequent reads re-populate individual entries |
+| `@Size(max=100)` | No limit, or configurable limit | 100 is a reasonable upper bound that prevents abuse while allowing meaningful batches. A configurable property adds complexity for minimal benefit |
+| `@NotEmpty` + `List<@Valid T>` | Manual validation in service | Container-level validation produces indexed error paths like `bulkCreate.requests[1].email` automatically, matching the existing validation pattern |
+| Single `@Transactional` (all-or-nothing) | Per-item transactions with partial success reporting | All-or-nothing is simpler for clients (either everything succeeded or nothing did). Partial success requires complex error response schemas and client-side retry logic for failed items |
+
+### Interview talking points
+
+**Q: Why not reuse the existing single-item service methods in a loop?**
+> Calling `this.create()` from `bulkCreate()` within the same class is self-invocation — it bypasses the Spring proxy, so `@CircuitBreaker`, `@Bulkhead`, `@Retry`, `@Transactional`, and `@CacheEvict` annotations on `create()` won't fire. You'd need to inject the service into itself or use `AopContext.currentProxy()`, both of which are anti-patterns. Dedicated methods with `saveAll()` are cleaner and more efficient.
+
+**Q: What happens if one item in the batch has a duplicate email?**
+> The entire batch rolls back. `saveAll()` runs within a single `@Transactional`, so the `DataIntegrityViolationException` from the unique constraint violation propagates up, Spring rolls back the transaction, and `GlobalExceptionHandler` returns a 409 Conflict. No items are persisted.
+
+**Q: Why `findEntityById()` per item instead of `findAllById()`?**
+> `findAllById()` is a Spring Data JPA method that returns only the entities it finds — if you pass `[1, 2, 99]` and ID 99 doesn't exist, it silently returns `[entity1, entity2]`. This violates the 404 contract. Per-item `findEntityById()` throws `ResourceNotFoundException` with "not found with id 99", rolling back the batch and returning a clear error.
+
+**Q: How does this interact with the IdempotencyFilter?**
+> Bulk POST endpoints inherit idempotency protection for free. The `IdempotencyFilter` intercepts all POST requests with an `Idempotency-Key` header, stores/replays the response. A bulk create with the same idempotency key replays the original response, preventing duplicate batch creation on retries.
+
+**Q: How would you handle partial success instead of all-or-nothing?**
+> You'd remove `@Transactional` from the bulk method, wrap each item in a try-catch, collect results and errors in separate lists, and return a composite response (e.g., `{succeeded: [...], failed: [{index: 3, error: "..."}]}`). This is more complex but useful for large batches where a single bad item shouldn't invalidate the entire request. The trade-off is that clients must handle partial failure and potentially retry individual items.
+
+---
+
+## 24. Cross-Cutting Concerns Summary
+
+### How the 21 features interact
 
 ```
 Request Flow:
@@ -2120,7 +2218,7 @@ Request Flow:
 
 ---
 
-## 24. Full API Endpoint Reference
+## 25. Full API Endpoint Reference
 
 ### User Endpoints
 
@@ -2132,6 +2230,9 @@ Request Flow:
 | PUT | `/api/v1/users/{id}` | `UserRequest` | `EntityModel<UserResponse>` | 200, 400, 404, 409, 500 |
 | PATCH | `/api/v1/users/{id}` | `UserPatchRequest` | `EntityModel<UserResponse>` | 200, 400, 404, 409, 500 |
 | DELETE | `/api/v1/users/{id}` | — | — | 204, 404, 500 |
+| POST | `/api/v1/users/bulk` | `List<UserRequest>` | `List<EntityModel<UserResponse>>` | 201, 400, 409, 500 |
+| PUT | `/api/v1/users/bulk` | `List<BulkUpdateRequest<UserRequest>>` | `List<EntityModel<UserResponse>>` | 200, 400, 404, 409, 500 |
+| DELETE | `/api/v1/users/bulk` | `List<Long>` | — | 204, 400, 404, 500 |
 
 **Query parameters for GET list**: `username`, `email`, `role`, `page`, `size`, `sort`
 
@@ -2145,6 +2246,9 @@ Request Flow:
 | PUT | `/api/v1/employees/{id}` | `EmployeeRequest` | `EntityModel<EmployeeResponse>` | 200, 400, 404, 409, 500 |
 | PATCH | `/api/v1/employees/{id}` | `EmployeePatchRequest` | `EntityModel<EmployeeResponse>` | 200, 400, 404, 409, 500 |
 | DELETE | `/api/v1/employees/{id}` | — | — | 204, 404, 500 |
+| POST | `/api/v1/employees/bulk` | `List<EmployeeRequest>` | `List<EntityModel<EmployeeResponse>>` | 201, 400, 409, 500 |
+| PUT | `/api/v1/employees/bulk` | `List<BulkUpdateRequest<EmployeeRequest>>` | `List<EntityModel<EmployeeResponse>>` | 200, 400, 404, 409, 500 |
+| DELETE | `/api/v1/employees/bulk` | `List<Long>` | — | 204, 400, 404, 500 |
 
 **Query parameters for GET list**: `firstName`, `lastName`, `email`, `departmentId`, `page`, `size`, `sort`
 
@@ -2158,6 +2262,9 @@ Request Flow:
 | PUT | `/api/v1/departments/{id}` | `DepartmentRequest` | `EntityModel<DepartmentResponse>` | 200, 400, 404, 409, 500 |
 | PATCH | `/api/v1/departments/{id}` | `DepartmentPatchRequest` | `EntityModel<DepartmentResponse>` | 200, 400, 404, 409, 500 |
 | DELETE | `/api/v1/departments/{id}` | — | — | 204, 404, 500 |
+| POST | `/api/v1/departments/bulk` | `List<DepartmentRequest>` | `List<EntityModel<DepartmentResponse>>` | 201, 400, 409, 500 |
+| PUT | `/api/v1/departments/bulk` | `List<BulkUpdateRequest<DepartmentRequest>>` | `List<EntityModel<DepartmentResponse>>` | 200, 400, 404, 409, 500 |
+| DELETE | `/api/v1/departments/bulk` | `List<Long>` | — | 204, 400, 404, 500 |
 
 **Query parameters for GET list**: `name`, `page`, `size`, `sort`
 
@@ -2212,4 +2319,4 @@ public class DatabaseConfig {
 
 ---
 
-*This document covers all 20 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*
+*This document covers all 21 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*
