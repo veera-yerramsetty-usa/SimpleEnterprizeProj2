@@ -1,0 +1,1558 @@
+# DETAILED_STEPS.md — Enterprise Spring Boot Project: Interview Preparation Guide
+
+> A comprehensive deep-dive into every feature implemented in **SimpleEnterprizeProj2**.
+> Covers three perspectives: **Developer** (how), **Tech Lead** (decisions), and **Architect** (why & trade-offs).
+
+---
+
+## Table of Contents
+
+1. [Tech Stack Overview](#1-tech-stack-overview)
+2. [Architecture Diagram](#2-architecture-diagram)
+3. [Feature 1 — Liquibase Database Migrations](#3-feature-1--liquibase-database-migrations)
+4. [Feature 2 — Domain Models (JPA Entities)](#4-feature-2--domain-models-jpa-entities)
+5. [Feature 3 — Spring Data JPA Repositories](#5-feature-3--spring-data-jpa-repositories)
+6. [Feature 4 — DTO Layer (Request / PatchRequest / Response)](#6-feature-4--dto-layer-request--patchrequest--response)
+7. [Feature 5 — Input Sanitization (XSS Protection)](#7-feature-5--input-sanitization-xss-protection)
+8. [Feature 6 — Mapper Layer (Entity-DTO Conversion)](#8-feature-6--mapper-layer-entity-dto-conversion)
+9. [Feature 7 — JPA Specifications (Dynamic Filtering)](#9-feature-7--jpa-specifications-dynamic-filtering)
+10. [Feature 8 — Service Layer with Transaction Management](#10-feature-8--service-layer-with-transaction-management)
+11. [Feature 9 — REST Controllers with HATEOAS](#11-feature-9--rest-controllers-with-hateoas)
+12. [Feature 10 — Global Exception Handling](#12-feature-10--global-exception-handling)
+13. [Feature 11 — OpenAPI / Swagger Documentation](#13-feature-11--openapi--swagger-documentation)
+14. [Feature 12 — Redis Caching (Application-Level)](#14-feature-12--redis-caching-application-level)
+15. [Feature 13 — Hibernate L2 Cache with EhCache](#15-feature-13--hibernate-l2-cache-with-ehcache)
+16. [Feature 14 — Resilience4j Circuit Breakers](#16-feature-14--resilience4j-circuit-breakers)
+17. [Feature 15 — Observability (Logging, Correlation IDs, Security Headers)](#17-feature-15--observability-logging-correlation-ids-security-headers)
+18. [Cross-Cutting Concerns Summary](#18-cross-cutting-concerns-summary)
+19. [Full API Endpoint Reference](#19-full-api-endpoint-reference)
+
+---
+
+## 1. Tech Stack Overview
+
+| Layer | Technology | Version |
+|---|---|---|
+| Language | Java | 25 |
+| Framework | Spring Boot | 4.0.2 |
+| ORM | Hibernate (via Spring Data JPA) | 7.x (managed) |
+| Database | H2 (in-memory for dev, file for prod) | managed |
+| Schema Migration | Liquibase | managed |
+| Connection Pool | HikariCP | managed |
+| Application Cache | Redis (Spring Data Redis) | managed |
+| ORM Cache | EhCache 3 (via JCache/JSR-107) | managed |
+| Resilience | Resilience4j | 2.3.0 |
+| API Documentation | springdoc-openapi | 3.0.1 |
+| Hypermedia | Spring HATEOAS | managed |
+| Validation | Jakarta Bean Validation (Hibernate Validator) | managed |
+| Build | Maven + spring-boot-maven-plugin | — |
+
+---
+
+## 2. Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         CLIENT (HTTP)                               │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │   SecurityHeadersFilter  │  X-Content-Type-Options, CSP, etc.
+                    │   RequestLoggingFilter    │  UUID correlation ID, duration logging
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │   @RestController Layer   │  UserController, EmployeeController,
+                    │   (Validation + HATEOAS)  │  DepartmentController
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │    @Service Layer         │  @Transactional, @CircuitBreaker,
+                    │    (Business Logic)       │  @Cacheable/@CachePut/@CacheEvict
+                    └─────┬─────────────┬─────┘
+                          │             │
+              ┌───────────▼──┐   ┌──────▼──────────┐
+              │ Mapper Layer │   │ Specification    │
+              │ (DTO ↔ Entity│   │ Layer (Criteria  │
+              │ + Sanitize)  │   │ API filters)     │
+              └───────────┬──┘   └──────┬──────────┘
+                          │             │
+                    ┌─────▼─────────────▼─────┐
+                    │   @Repository Layer       │  JpaRepository + JpaSpecificationExecutor
+                    │   (Query Cache hints)     │  @QueryHints(HINT_CACHEABLE)
+                    └────────────┬────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              │                  │                   │
+     ┌────────▼────────┐ ┌──────▼──────┐  ┌────────▼────────┐
+     │  Hibernate L2   │ │  H2 Database │  │  Redis Cache    │
+     │  Cache (EhCache)│ │  (Liquibase  │  │  (10-min TTL,   │
+     │  Entity + Query │ │   managed)   │  │   User domain)  │
+     └─────────────────┘ └─────────────┘  └─────────────────┘
+```
+
+---
+
+## 3. Feature 1 — Liquibase Database Migrations
+
+### What was done
+Database schema is managed entirely by Liquibase with 3 incremental changesets, instead of relying on Hibernate's `ddl-auto`.
+
+### Why (Architect perspective)
+- **Reproducibility**: Every environment (dev, staging, prod) gets the exact same schema via version-controlled changesets.
+- **Auditability**: Each changeset has an ID and author — you can trace who changed what and when.
+- **Safety**: Liquibase tracks applied changesets in its `DATABASECHANGELOG` table. It never re-applies a changeset, preventing accidental data loss.
+- **Team collaboration**: Multiple developers can add changesets in parallel; conflicts are detected at merge time.
+
+### How (Developer perspective)
+
+**Master changelog** — `src/main/resources/db/changelog/db.changelog-master.yaml`:
+```yaml
+databaseChangeLog:
+  - includeAll:
+      path: db/changelog/changes/
+```
+
+**Changeset 001** — `changes/001-initial-schema.yaml` (author: `initial`):
+- Creates `users` table: `id` (BIGINT PK auto-increment), `username` (VARCHAR 255, NOT NULL, UNIQUE), `email` (VARCHAR 255, NOT NULL, UNIQUE), `password` (VARCHAR 255, NOT NULL), `role` (VARCHAR 255)
+- Creates `departments` table: `id`, `name` (UNIQUE), `description`
+- Creates `employees` table: `id`, `first_name`, `last_name`, `email` (UNIQUE), `phone`, `department_id` (nullable FK)
+- Adds FK constraint `fk_employees_department` with `onDelete: SET NULL`
+
+**Changeset 002** — `changes/002-add-indexes.yaml` (author: `initial`):
+- `idx_employees_department_id` — speeds up joins/filters by department
+- `idx_employees_name` — composite index on `(last_name, first_name)` for name searches
+- `idx_users_role` — index on `role` for role-based filtering
+
+**Changeset 003** — `changes/003-add-soft-deletes.yaml` (author: `developer`):
+- Adds `deleted BOOLEAN DEFAULT false NOT NULL` to all 3 tables
+- Adds indexes: `idx_users_deleted`, `idx_employees_deleted`, `idx_departments_deleted`
+
+**Configuration** — `application-dev.properties`:
+```properties
+spring.jpa.hibernate.ddl-auto=none          # Liquibase manages schema
+spring.liquibase.enabled=true
+spring.liquibase.change-log=classpath:db/changelog/db.changelog-master.yaml
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| YAML format | XML, SQL, JSON | YAML is concise and readable; SQL gives more power but is DB-specific |
+| `includeAll` | Explicit `include` per file | Auto-discovery reduces boilerplate; files are sorted alphabetically (hence numbering prefix) |
+| `ddl-auto=none` | `validate`, `update` | `none` is the only safe option when Liquibase manages schema; `update` would conflict |
+| `onDelete: SET NULL` | `CASCADE`, `RESTRICT` | Deleting a department shouldn't cascade-delete employees; they become unassigned instead |
+| Separate changeset for indexes | Indexes in initial schema | Incremental changesets show the evolution; easier to reason about in code review |
+| Separate changeset for soft deletes | Include `deleted` in initial schema | Demonstrates schema evolution — a realistic pattern for adding features post-launch |
+
+### Interview talking points
+
+**Q: Why Liquibase over Flyway?**
+> Both are excellent. Liquibase supports YAML/XML/JSON/SQL formats and has richer rollback support out of the box. Flyway is simpler (SQL-only by default) and may be preferable for teams that want raw SQL control. The project uses Liquibase because it integrates well with Spring Boot's auto-configuration and provides database-agnostic changeset definitions.
+
+**Q: Why not use `ddl-auto=update` for development?**
+> `ddl-auto=update` is convenient but dangerous: it never drops columns, can generate suboptimal DDL, and doesn't handle data migrations. Using Liquibase from day one ensures what you test locally is what runs in production. It also catches migration issues early.
+
+**Q: How do you handle rollbacks?**
+> Liquibase supports `rollback` blocks per changeset. For `createTable`, the automatic rollback is `dropTable`. For `addColumn`, it's `dropColumn`. In production, rollbacks should be tested in staging first and ideally be forward-only (new changeset to undo) rather than destructive rollbacks.
+
+**Q: What happens if two developers add changesets with the same ID?**
+> Liquibase will fail on startup with a checksum/duplicate ID error. The `includeAll` approach combined with numbered prefixes (001, 002, ...) makes this easy to coordinate.
+
+---
+
+## 4. Feature 2 — Domain Models (JPA Entities)
+
+### What was done
+Three JPA entities (`User`, `Employee`, `Department`) with Hibernate L2 cache annotations, soft-delete filtering via `@SQLRestriction`, and a `@ManyToOne` relationship between Employee and Department.
+
+### Why (Architect perspective)
+- **Separation of domain from schema**: JPA entities map Java objects to relational tables, decoupling business logic from raw SQL.
+- **Soft deletes**: Records are never physically removed — they're flagged as `deleted = true`. The `@SQLRestriction("deleted = false")` annotation ensures Hibernate automatically appends `WHERE deleted = false` to all queries, making deleted records invisible without custom query logic.
+- **L2 caching at the entity level**: Frequently-read entities (users, employees, departments) are cached in EhCache, reducing database round-trips.
+
+### How (Developer perspective)
+
+**`User.java`** — `src/main/java/.../model/User.java`:
+```java
+@Entity
+@Table(name = "users")
+@SQLRestriction("deleted = false")
+@Cacheable
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
+public class User {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true)
+    private String username;
+
+    @Column(nullable = false, unique = true)
+    private String email;
+
+    @Column(nullable = false)
+    private String password;
+
+    private String role;
+    private boolean deleted = false;
+    // constructors + getters/setters
+}
+```
+
+**`Employee.java`** — `src/main/java/.../model/Employee.java`:
+```java
+@Entity
+@Table(name = "employees")
+@SQLRestriction("deleted = false")
+@Cacheable
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
+public class Employee {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    @Column(nullable = false) private String firstName;
+    @Column(nullable = false) private String lastName;
+    @Column(nullable = false, unique = true) private String email;
+    private String phone;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "department_id")
+    private Department department;
+
+    private boolean deleted = false;
+}
+```
+
+**`Department.java`** — `src/main/java/.../model/Department.java`:
+```java
+@Entity
+@Table(name = "departments")
+@SQLRestriction("deleted = false")
+@Cacheable
+@Cache(usage = CacheConcurrencyStrategy.NONSTRICT_READ_WRITE)
+public class Department {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    @Column(nullable = false, unique = true) private String name;
+    private String description;
+    private boolean deleted = false;
+}
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| `@SQLRestriction` (Hibernate 7) | `@Where` (deprecated), manual query predicates | `@SQLRestriction` is the Hibernate 7 replacement for `@Where`; it's automatic and transparent |
+| `CacheConcurrencyStrategy.READ_WRITE` | `NONSTRICT_READ_WRITE`, `READ_ONLY`, `TRANSACTIONAL` | `READ_WRITE` provides strong consistency with locks; Department uses `NONSTRICT_READ_WRITE` because it changes less frequently and eventual consistency is acceptable |
+| `FetchType.LAZY` on `@ManyToOne` | `EAGER` (JPA default for `@ManyToOne`) | `LAZY` prevents N+1 in list queries; the department is only loaded when accessed |
+| `GenerationType.IDENTITY` | `SEQUENCE`, `TABLE`, `UUID` | `IDENTITY` maps directly to H2's auto-increment; `SEQUENCE` is preferred for PostgreSQL batch inserts but unnecessary here |
+| Soft delete via boolean flag | `@SoftDelete` (Hibernate 7), `deletedAt` timestamp | Boolean flag is the simplest approach; a timestamp would also track *when* deletion occurred; `@SoftDelete` is newer but less transparent |
+
+### Interview talking points
+
+**Q: What's the difference between `@SQLRestriction` and `@Where`?**
+> `@Where` was deprecated in Hibernate 6.3 and removed in Hibernate 7. `@SQLRestriction` is the direct replacement. Both append a SQL fragment to every query, but `@SQLRestriction` has clearer naming and better integration with Hibernate 7's query model.
+
+**Q: Why `LAZY` fetching on `@ManyToOne`?**
+> JPA defaults `@ManyToOne` to `EAGER`, which means loading 100 employees would fire 100 additional queries for departments (N+1 problem). `LAZY` ensures the department is only loaded on demand. In list endpoints, the mapper explicitly accesses `employee.getDepartment()` only when needed, and the L2 cache typically satisfies it.
+
+**Q: How does soft delete work with unique constraints?**
+> This is a known challenge. If you soft-delete a user with username "john", you can't create a new user with the same username because the unique constraint still sees the deleted row. Solutions include: composite unique index `(username, deleted)`, partial indexes (Postgres-specific), or removing uniqueness on soft-deleted rows via a trigger. In this project with H2, the simpler boolean approach is used.
+
+**Q: What's the risk of storing password in the entity?**
+> The password field is in the entity but is explicitly excluded from `UserResponse` DTO (the mapper never maps it to the response). In production, passwords should be hashed (BCrypt/Argon2) before storage. The current design ensures the password never leaks through the API, but proper hashing should be added before production use.
+
+---
+
+## 5. Feature 3 — Spring Data JPA Repositories
+
+### What was done
+Three repository interfaces extending `JpaRepository` and `JpaSpecificationExecutor`, with Hibernate query cache hints on `findAll` and `findById` methods.
+
+### Why (Architect perspective)
+- **Zero boilerplate**: Spring Data JPA generates all CRUD implementations at runtime.
+- **Specification support**: `JpaSpecificationExecutor` enables type-safe, composable dynamic queries without writing JPQL/SQL.
+- **Query cache integration**: By annotating repository methods with `@QueryHints(HINT_CACHEABLE)`, the query results are cached in Hibernate's L2 query cache (EhCache), avoiding repeated identical queries.
+
+### How (Developer perspective)
+
+**`UserRepository.java`** — `src/main/java/.../repository/UserRepository.java`:
+```java
+public interface UserRepository extends JpaRepository<User, Long>,
+                                        JpaSpecificationExecutor<User> {
+    @Override
+    @QueryHints(@QueryHint(name = HibernateHints.HINT_CACHEABLE, value = "true"))
+    Page<User> findAll(Specification<User> spec, Pageable pageable);
+
+    @Override
+    @QueryHints(@QueryHint(name = HibernateHints.HINT_CACHEABLE, value = "true"))
+    Optional<User> findById(Long id);
+}
+```
+
+The same pattern is applied to `EmployeeRepository` and `DepartmentRepository`.
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| `JpaSpecificationExecutor` | `@Query` with JPQL, Querydsl, jOOQ | Specifications are part of Spring Data JPA (no extra dependencies), composable, and type-safe via the Criteria API |
+| Query cache on `findAll` and `findById` | Cache only at the service layer (Redis) | Hibernate query cache operates at the ORM level — it caches the *query result set* (entity IDs), so even without Redis, repeated identical queries hit the cache |
+| Overriding methods to add `@QueryHints` | Global query hint configuration | Per-method hints give fine-grained control; you might not want every query cached (e.g., write-heavy queries) |
+
+### Interview talking points
+
+**Q: How does the Hibernate query cache work differently from Redis?**
+> The Hibernate query cache caches *query results* (sets of entity IDs) keyed by the query string + parameters. When the same query runs again, Hibernate retrieves the IDs from the query cache, then loads the entities from the L2 entity cache (EhCache). Redis, in contrast, caches the *serialized DTO response* at the application/service layer. They work at different levels and complement each other.
+
+**Q: What's the risk of enabling query cache?**
+> The query cache is invalidated whenever *any* entity in the cached table is modified. For write-heavy tables, this means constant invalidation, making the cache counterproductive. It works best for read-heavy, rarely-changing data. The `default-update-timestamps-region` in EhCache tracks table modification times to detect stale query results.
+
+**Q: Why not use Querydsl?**
+> Querydsl generates Q-classes at compile time and offers a more fluent API, but adds build complexity (annotation processing, generated source management). JPA Specifications achieve the same composability with zero extra dependencies since they're part of Spring Data JPA.
+
+---
+
+## 6. Feature 4 — DTO Layer (Request / PatchRequest / Response)
+
+### What was done
+For each entity, three DTO types were created:
+- **Request** (for `POST`/`PUT`) — all required fields validated with `@NotBlank`
+- **PatchRequest** (for `PATCH`) — all fields optional (nullable), only non-null fields are applied
+- **Response** — the API response shape, excluding sensitive fields like `password`
+
+### Why (Architect perspective)
+- **Security**: DTOs prevent mass-assignment attacks. Without DTOs, a client could send `{"id": 999, "deleted": true}` and directly manipulate entity fields.
+- **API contract stability**: The entity structure can change (add columns, rename fields) without breaking the public API contract.
+- **Separation of concerns**: Validation rules live in the DTO layer, not the entity. The entity represents the database schema; the DTO represents the API contract.
+
+### How (Developer perspective)
+
+**`UserRequest.java`** — `src/main/java/.../dto/UserRequest.java`:
+```java
+public class UserRequest {
+    @NotBlank(message = "Username is required")
+    @Size(max = 255, message = "Username must not exceed 255 characters")
+    @Pattern(regexp = "^[a-zA-Z0-9_-]+$",
+             message = "Username must contain only alphanumeric characters, underscores, or hyphens")
+    private String username;
+
+    @NotBlank(message = "Email is required")
+    @Email(message = "Email must be valid")
+    @Size(max = 255, message = "Email must not exceed 255 characters")
+    private String email;
+
+    @NotBlank(message = "Password is required")
+    @Size(min = 8, max = 255, message = "Password must be between 8 and 255 characters")
+    @Pattern(regexp = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).+$",
+             message = "Password must contain at least one uppercase, one lowercase, and one digit")
+    private String password;
+
+    @Size(max = 255) @Pattern(regexp = "^[a-zA-Z0-9_]+$")
+    private String role;
+}
+```
+
+**`UserPatchRequest.java`** — same fields, but **no `@NotBlank`** annotations. `username` has `@Size(min=1)` to prevent empty-string patches.
+
+**`UserResponse.java`** — fields: `id`, `username`, `email`, `role` (no `password`).
+
+**`EmployeeRequest`** validation highlights:
+- `firstName`/`lastName`: `@Pattern("^[a-zA-Z '-]+$")` — allows letters, spaces, apostrophes, hyphens
+- `phone`: `@Pattern("^[+]?[0-9() -]+$")` — allows international phone formats
+- `departmentId`: nullable `Long` — employee can be unassigned
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Separate Request / PatchRequest DTOs | Single DTO with conditional validation | Separate classes make the contract explicit. A PATCH DTO with all-optional fields is semantically different from a POST DTO with all-required fields |
+| `@Pattern` regex on all string inputs | Validate only at the database level | Defense-in-depth: validation at the API layer rejects bad input before it reaches the service/database. Patterns also prevent injection via special characters |
+| Password excluded from Response | Return all fields | Security best practice. Even hashed passwords shouldn't be exposed through the API |
+| `@Size(max = 255)` on all strings | No size limit | Matches the `VARCHAR(255)` database constraint. Prevents oversized payloads and potential denial-of-service |
+
+### Interview talking points
+
+**Q: Why not use a single DTO for both POST and PATCH?**
+> A POST requires all fields (`@NotBlank`); a PATCH only applies non-null fields. Combining them requires conditional validation groups (`@Validated(OnCreate.class)` vs `@Validated(OnPatch.class)`), which is more complex and harder to read than separate classes. With records or sealed types in modern Java, you could unify them, but explicit separation is clearer.
+
+**Q: How does PATCH differ from PUT semantically?**
+> PUT is a full replacement — the client sends the complete resource, and all fields are overwritten. PATCH is a partial update — only the fields present in the request body are updated. The mapper's `patchEntity()` method checks `if (field != null)` before setting each value.
+
+**Q: Why validate at the DTO level AND use database constraints?**
+> Defense-in-depth. DTO validation gives friendly error messages to clients. Database constraints are the last line of defense if a bug bypasses DTO validation. They also protect against direct database access or batch jobs that don't go through the API.
+
+---
+
+## 7. Feature 5 — Input Sanitization (XSS Protection)
+
+### What was done
+A utility class `SanitizationUtils` provides two static methods:
+1. `sanitize(String)` — OWASP-style HTML entity encoding to prevent stored XSS
+2. `escapeWildcards(String)` — escapes SQL LIKE wildcards (`%`, `_`) to prevent wildcard injection in search queries
+
+### Why (Architect perspective)
+- **Stored XSS prevention**: If an attacker submits `<script>alert('xss')</script>` as a username, the HTML entity encoding converts it to `&lt;script&gt;...` before storage, neutralizing it when rendered in a browser.
+- **SQL wildcard injection prevention**: Without escaping, a search for `%` would match all records, and `_` matches any single character. Escaping ensures user input is treated as literal text.
+
+### How (Developer perspective)
+
+**`SanitizationUtils.java`** — `src/main/java/.../util/SanitizationUtils.java`:
+```java
+public final class SanitizationUtils {
+    private SanitizationUtils() {}
+
+    public static String sanitize(String input) {
+        if (input == null) return null;
+        String trimmed = input.trim();
+        return trimmed.replace("&", "&amp;")
+                      .replace("<", "&lt;")
+                      .replace(">", "&gt;")
+                      .replace("\"", "&quot;")
+                      .replace("'", "&#x27;");
+    }
+
+    public static String escapeWildcards(String input) {
+        if (input == null) return null;
+        return input.replace("%", "\\%").replace("_", "\\_");
+    }
+}
+```
+
+**Usage in Mappers** — every string field is sanitized before being set on the entity:
+```java
+user.setUsername(SanitizationUtils.sanitize(request.getUsername()));
+user.setEmail(SanitizationUtils.sanitize(request.getEmail()));
+user.setPassword(request.getPassword());  // Password is NOT sanitized
+user.setRole(SanitizationUtils.sanitize(request.getRole()));
+```
+
+**Usage in Specifications** — search parameters are escaped before building LIKE clauses:
+```java
+String escaped = SanitizationUtils.escapeWildcards(username.toLowerCase());
+spec = spec.and((root, query, cb) ->
+    cb.like(cb.lower(root.get("username")), "%" + escaped + "%", '\\'));
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Manual HTML entity encoding | OWASP Java Encoder library, Jsoup | Zero dependencies. The 5 characters encoded (&, <, >, ", ') cover the OWASP XSS prevention cheat sheet essentials |
+| Sanitize on input (store encoded) | Sanitize on output (store raw) | Input sanitization is simpler — you encode once at write time. Output sanitization requires encoding everywhere data is rendered, which is error-prone |
+| `&` encoded first | Any order | `&` must be encoded first to prevent double-encoding: if `<` is encoded to `&lt;` first, then encoding `&` would turn `&lt;` into `&amp;lt;` |
+| Password NOT sanitized | Sanitize everything | Sanitizing passwords would change the user's actual password. HTML characters in passwords are not a risk because passwords are never rendered in HTML |
+
+### Interview talking points
+
+**Q: Why not use a library like OWASP Java Encoder?**
+> In production, using `org.owasp.encoder.Encode.forHtml()` is recommended — it handles edge cases like Unicode escaping. The manual approach here covers the critical 5 characters and demonstrates understanding of the underlying mechanism.
+
+**Q: Input sanitization vs. output encoding — which is better?**
+> Output encoding is generally preferred by security experts because it's context-aware (HTML vs. JavaScript vs. URL encoding). However, input sanitization is simpler to implement consistently. The ideal approach is both: sanitize on input as a first defense, and encode on output for defense-in-depth.
+
+**Q: What about SQL injection?**
+> SQL injection is already prevented by JPA/Hibernate — parameterized queries are used everywhere. The `escapeWildcards` method doesn't prevent SQL injection; it prevents *wildcard abuse* in LIKE queries, which is a different concern.
+
+---
+
+## 8. Feature 6 — Mapper Layer (Entity-DTO Conversion)
+
+### What was done
+Three `@Component` mapper classes (`UserMapper`, `EmployeeMapper`, `DepartmentMapper`) handle all entity-to-DTO and DTO-to-entity conversions. Each provides `toEntity`, `toResponse`, `updateEntity`, and `patchEntity` methods.
+
+### Why (Architect perspective)
+- **Single responsibility**: Conversion logic is centralized in one place per domain, not scattered across services and controllers.
+- **Testability**: Mappers are simple Spring beans that can be unit-tested without Spring context.
+- **Sanitization gate**: All input sanitization happens in the mapper, creating a single enforcement point.
+
+### How (Developer perspective)
+
+**`UserMapper.java`** — `src/main/java/.../mapper/UserMapper.java`:
+```java
+@Component
+public class UserMapper {
+    public User toEntity(UserRequest request) {
+        User user = new User();
+        user.setUsername(SanitizationUtils.sanitize(request.getUsername()));
+        user.setEmail(SanitizationUtils.sanitize(request.getEmail()));
+        user.setPassword(request.getPassword());
+        user.setRole(SanitizationUtils.sanitize(request.getRole()));
+        return user;
+    }
+
+    public UserResponse toResponse(User user) {
+        return new UserResponse(user.getId(), user.getUsername(),
+                                user.getEmail(), user.getRole());
+    }
+
+    public void updateEntity(User user, UserRequest request) {
+        user.setUsername(SanitizationUtils.sanitize(request.getUsername()));
+        user.setEmail(SanitizationUtils.sanitize(request.getEmail()));
+        user.setPassword(request.getPassword());
+        user.setRole(SanitizationUtils.sanitize(request.getRole()));
+    }
+
+    public void patchEntity(User user, UserPatchRequest request) {
+        if (request.getUsername() != null) user.setUsername(SanitizationUtils.sanitize(request.getUsername()));
+        if (request.getEmail() != null)    user.setEmail(SanitizationUtils.sanitize(request.getEmail()));
+        if (request.getPassword() != null) user.setPassword(request.getPassword());
+        if (request.getRole() != null)     user.setRole(SanitizationUtils.sanitize(request.getRole()));
+    }
+}
+```
+
+**`EmployeeMapper`** notable detail — constructor injects `DepartmentMapper` to produce nested `DepartmentResponse` in `EmployeeResponse`:
+```java
+public EmployeeResponse toResponse(Employee employee) {
+    DepartmentResponse deptResponse = employee.getDepartment() != null
+        ? departmentMapper.toResponse(employee.getDepartment()) : null;
+    return new EmployeeResponse(employee.getId(), employee.getFirstName(),
+        employee.getLastName(), employee.getEmail(), employee.getPhone(), deptResponse);
+}
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Manual mappers | MapStruct, ModelMapper, Dozer | Manual mappers give full control over sanitization and null-handling. MapStruct generates code at compile time (faster) but requires annotation processing setup |
+| `void updateEntity(entity, request)` | Return new entity | Modifying the existing JPA-managed entity in place is idiomatic — Hibernate's dirty checking handles the rest |
+| `patchEntity` with null checks | Reflection-based patching, `Optional<T>` fields | Explicit null checks are verbose but readable and debuggable. `Optional<T>` in DTOs is an anti-pattern per Jackson's design |
+| DepartmentMapper injected into EmployeeMapper | Inline department mapping | Composition avoids duplicating department mapping logic |
+
+### Interview talking points
+
+**Q: Why manual mappers instead of MapStruct?**
+> MapStruct is the preferred choice for large projects — it generates compile-time mapping code with zero runtime overhead. Manual mappers are used here for transparency and because the sanitization logic in each setter call is easier to understand inline. In a real enterprise project, I'd use MapStruct with custom `@AfterMapping` methods for sanitization.
+
+**Q: How do you handle null vs. empty string in PATCH?**
+> Null means "don't change this field." The `patchEntity` method only updates fields where the request value is non-null. However, there's a subtle issue: you can't *clear* a field to null with this approach. Solutions include using `Optional<T>` (awkward with Jackson), a separate "null fields" list, or JSON Merge Patch (RFC 7396).
+
+**Q: Why is `toResponse` important for security?**
+> It acts as a whitelist — only explicitly mapped fields appear in the API response. If a new sensitive column is added to the entity (e.g., `ssn`), it won't leak to clients unless someone explicitly adds it to `toResponse`.
+
+---
+
+## 9. Feature 7 — JPA Specifications (Dynamic Filtering)
+
+### What was done
+Three specification classes (`UserSpecification`, `EmployeeSpecification`, `DepartmentSpecification`) build composable `Specification<T>` instances for dynamic query filtering using the JPA Criteria API.
+
+### Why (Architect perspective)
+- **Dynamic queries**: Filter parameters are optional. Specifications compose with `spec.and(...)` only when a parameter is non-null/non-blank, building the minimal WHERE clause needed.
+- **Type safety**: The Criteria API catches invalid field names at compile time (with metamodel generation) or at query execution time.
+- **SQL injection prevention**: Parameters are bound via the Criteria API's parameter binding, never concatenated into SQL.
+
+### How (Developer perspective)
+
+**`UserSpecification.java`** — `src/main/java/.../specification/UserSpecification.java`:
+```java
+public class UserSpecification {
+    private UserSpecification() {}
+
+    public static Specification<User> build(String username, String email, String role) {
+        Specification<User> spec = Specification.where(null);
+
+        if (username != null && !username.isBlank()) {
+            String escaped = SanitizationUtils.escapeWildcards(username.toLowerCase());
+            spec = spec.and((root, query, cb) ->
+                cb.like(cb.lower(root.get("username")), "%" + escaped + "%", '\\'));
+        }
+        if (email != null && !email.isBlank()) {
+            String escaped = SanitizationUtils.escapeWildcards(email.toLowerCase());
+            spec = spec.and((root, query, cb) ->
+                cb.like(cb.lower(root.get("email")), "%" + escaped + "%", '\\'));
+        }
+        if (role != null && !role.isBlank()) {
+            spec = spec.and((root, query, cb) ->
+                cb.equal(root.get("role"), role));
+        }
+        return spec;
+    }
+}
+```
+
+Key details:
+- **Case-insensitive search**: `cb.lower()` on both the column and the search term
+- **Wildcard escaping**: `SanitizationUtils.escapeWildcards()` prevents `%` and `_` in user input from acting as SQL wildcards
+- **Explicit escape character**: `cb.like(..., '\\')` tells the database that `\\` is the escape character, ensuring cross-database portability
+- **`role` uses exact match**: `cb.equal` — roles are looked up by exact value, not partial match
+
+**`EmployeeSpecification`** adds `departmentId` filter:
+```java
+if (departmentId != null) {
+    spec = spec.and((root, query, cb) ->
+        cb.equal(root.get("department").get("id"), departmentId));
+}
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Static factory method `build()` | Builder pattern, individual specification methods | Single method is simple; returns a composable `Specification<T>` |
+| `Specification.where(null)` as base | `Specification.where(alwaysTrueSpec)` | `where(null)` acts as identity (no-op); Spring Data handles it correctly |
+| LIKE with `%prefix%` | Full-text search (PostgreSQL `tsvector`, Elasticsearch) | LIKE is sufficient for small datasets. Full-text search adds infrastructure complexity |
+| Explicit escape character `'\\'` | Database default escape character | Not all databases use the same default escape character. Explicitly specifying `'\\'` ensures the escape works on H2, PostgreSQL, MySQL, and Oracle |
+
+### Interview talking points
+
+**Q: What's the N+1 problem and how do Specifications interact with it?**
+> Specifications generate a single SQL query with the appropriate WHERE clause. The N+1 problem occurs when *associations* are lazily loaded per entity (e.g., loading department for each employee). The L2 cache mitigates this — after the first load, department lookups hit EhCache instead of the database.
+
+**Q: How would you add sorting to specifications?**
+> Sorting is handled by `Pageable` (passed from the controller as `?sort=username,asc`). Spring Data JPA automatically applies `ORDER BY` from the Pageable parameter. The specification only handles filtering (WHERE clause).
+
+**Q: Why escape LIKE wildcards?**
+> Without escaping, a user searching for `100%` would match any string starting with `100` (because `%` is a wildcard). Escaping converts it to `100\%`, treating `%` as a literal character. Similarly, `_` (single-character wildcard) is escaped.
+
+---
+
+## 10. Feature 8 — Service Layer with Transaction Management
+
+### What was done
+Three service classes (`UserService`, `EmployeeService`, `DepartmentService`) implement business logic with:
+- Class-level `@Transactional(readOnly = true)` for read operations
+- Method-level `@Transactional` (read-write) for create/update/patch/delete
+- Soft-delete implementation (sets `deleted = true` instead of removing rows)
+- Audit logging for all write operations
+
+### Why (Architect perspective)
+- **Transaction boundaries**: The service layer is the correct place for transaction demarcation. Controllers shouldn't manage transactions (they're HTTP concerns), and repositories are too fine-grained.
+- **`readOnly = true` optimization**: Read-only transactions skip dirty checking, reduce memory usage, and can use read replicas in a clustered database setup.
+- **Soft delete**: Data is never lost. Compliance requirements (GDPR audit trail, financial regulations) often require keeping records. Soft-deleted data can be restored or permanently purged in a scheduled job.
+
+### How (Developer perspective)
+
+**`UserService.java`** — `src/main/java/.../service/UserService.java`:
+```java
+@Service
+@Transactional(readOnly = true)
+public class UserService {
+    private static final String CACHE_NAME = "users";
+    private static final Logger log = LoggerFactory.getLogger(UserService.class);
+    private final UserRepository userRepository;
+    private final UserMapper userMapper;
+
+    // Constructor injection (no @Autowired needed — single constructor)
+
+    public Page<UserResponse> findAll(String username, String email, String role, Pageable pageable) {
+        return userRepository.findAll(UserSpecification.build(username, email, role), pageable)
+                .map(userMapper::toResponse);
+    }
+
+    @Cacheable(value = CACHE_NAME, key = "#id")
+    public UserResponse findResponseById(Long id) {
+        return userMapper.toResponse(findEntityById(id));
+    }
+
+    public User findEntityById(Long id) {
+        return userRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with id " + id));
+    }
+
+    @Transactional  // Overrides class-level readOnly=true
+    @CachePut(value = CACHE_NAME, key = "#result.id")
+    public UserResponse create(UserRequest request) {
+        User user = userMapper.toEntity(request);
+        UserResponse response = userMapper.toResponse(userRepository.save(user));
+        log.info("Created user id={}", response.getId());
+        return response;
+    }
+
+    @Transactional
+    @CachePut(value = CACHE_NAME, key = "#id")
+    public UserResponse update(Long id, UserRequest request) {
+        User user = findEntityById(id);
+        userMapper.updateEntity(user, request);
+        UserResponse response = userMapper.toResponse(userRepository.save(user));
+        log.info("Updated user id={}", id);
+        return response;
+    }
+
+    @Transactional
+    @CachePut(value = CACHE_NAME, key = "#id")
+    public UserResponse patch(Long id, UserPatchRequest request) {
+        User user = findEntityById(id);
+        userMapper.patchEntity(user, request);
+        UserResponse response = userMapper.toResponse(userRepository.save(user));
+        log.info("Patched user id={}", id);
+        return response;
+    }
+
+    @Transactional
+    @CacheEvict(value = CACHE_NAME, key = "#id")
+    public void delete(Long id) {
+        User user = findEntityById(id);
+        user.setDeleted(true);
+        userRepository.save(user);
+        log.info("Soft-deleted user id={}", id);
+    }
+}
+```
+
+**`EmployeeService`** notable detail — resolving department association:
+```java
+private void resolveDepartment(Employee employee, Long departmentId) {
+    if (departmentId != null) {
+        Department dept = departmentService.findEntityById(departmentId);
+        employee.setDepartment(dept);
+    } else {
+        employee.setDepartment(null);
+    }
+}
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Class-level `readOnly=true` + method-level `@Transactional` override | Per-method `@Transactional` everywhere | Reduces annotation noise — most service methods are reads; only writes need the override |
+| `findEntityById` returns `User` (entity) | Always return DTOs | Other services (like EmployeeService) need the entity to set associations; the DTO doesn't expose the JPA-managed entity |
+| `@CachePut` on create/update | `@CacheEvict` on create/update | `@CachePut` updates the cache with the new value immediately, so the next read hits the cache. `@CacheEvict` would force a cache miss on the next read |
+| `@CacheEvict` on delete | No cache action | The deleted entity should not be served from cache. Eviction ensures the next lookup goes to the database (where `@SQLRestriction` filters it out) |
+| Logging at `info` level for writes | Audit table, event sourcing | Simple SLF4J logging is sufficient for this scope. In production, an audit table or event stream provides better queryability |
+
+### Interview talking points
+
+**Q: What does `@Transactional(readOnly = true)` actually do?**
+> Three things: (1) Hibernate skips dirty checking at flush time (performance), (2) Some JDBC drivers send a `SET TRANSACTION READ ONLY` hint, enabling database optimizations, (3) In a primary-replica setup, Spring can route read-only transactions to the replica.
+
+**Q: What happens if `findEntityById` is called within `create()` — does it open a new transaction?**
+> No. Both methods are in the same bean, so Spring's proxy handles it. `create()` opens a read-write transaction, and `findEntityById()` participates in the same transaction (Spring's default propagation is `REQUIRED`). Self-invocation within the same bean doesn't go through the proxy, so the `readOnly` attribute on the class is not re-evaluated.
+
+**Q: Why `@CachePut(key = "#result.id")` on create?**
+> At invocation time, the entity hasn't been saved yet, so there's no `id` parameter. `#result.id` tells Spring to use the return value's `id` field as the cache key, which is populated after `repository.save()`.
+
+**Q: How would you handle cache consistency in a multi-instance deployment?**
+> Redis is centralized — all instances share the same cache. However, Hibernate's L2 cache (EhCache) is local to each JVM. In a multi-instance setup, you'd replace EhCache with a distributed cache (Infinispan, Hazelcast, or Redis-backed JCache provider) or accept slight staleness with shorter TTLs.
+
+---
+
+## 11. Feature 9 — REST Controllers with HATEOAS
+
+### What was done
+Three REST controllers (`UserController`, `EmployeeController`, `DepartmentController`) expose a full CRUD API with:
+- HATEOAS links (self + collection) on every response using Spring HATEOAS
+- `PagedModel` for paginated list responses with navigation links
+- `@Validated` at class level for query parameter validation
+- `Location` header on POST (201 Created)
+
+### Why (Architect perspective)
+- **HATEOAS (Richardson Maturity Level 3)**: Clients don't need to construct URLs — they follow links from the response. This decouples clients from URL structure and enables API discoverability.
+- **`PagedModel`**: Provides standardized pagination metadata (page number, size, total elements, total pages) along with `first`/`last`/`next`/`prev` navigation links.
+- **`Location` header on POST**: HTTP 201 spec requires a `Location` header pointing to the newly created resource.
+
+### How (Developer perspective)
+
+**`UserController.java`** — `src/main/java/.../controller/UserController.java`:
+```java
+@Validated
+@RestController
+@RequestMapping("/api/v1/users")
+@Tag(name = "Users", description = "User management operations")
+public class UserController {
+    private final UserService userService;
+    private final PagedResourcesAssembler<UserResponse> pagedAssembler;
+
+    // Constructor injection
+
+    @GetMapping
+    public ResponseEntity<PagedModel<EntityModel<UserResponse>>> getAll(
+            @RequestParam(required = false) @Size(max = 255) String username,
+            @RequestParam(required = false) @Size(max = 255) String email,
+            @RequestParam(required = false) @Size(max = 255) String role,
+            Pageable pageable) {
+        Page<UserResponse> page = userService.findAll(username, email, role, pageable);
+        return ResponseEntity.ok(pagedAssembler.toModel(page, this::toEntityModel));
+    }
+
+    @PostMapping
+    public ResponseEntity<EntityModel<UserResponse>> create(@Valid @RequestBody UserRequest request) {
+        UserResponse response = userService.create(request);
+        URI location = ServletUriComponentsBuilder.fromCurrentRequest()
+                .path("/{id}").buildAndExpand(response.getId()).toUri();
+        return ResponseEntity.created(location).body(toEntityModel(response));
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable Long id) {
+        userService.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+
+    private EntityModel<UserResponse> toEntityModel(UserResponse response) {
+        return EntityModel.of(response,
+            linkTo(methodOn(UserController.class).getById(response.getId())).withSelfRel(),
+            linkTo(methodOn(UserController.class).getAll(null, null, null, null)).withRel("users"));
+    }
+}
+```
+
+**Response example** (GET /api/v1/users/1):
+```json
+{
+  "id": 1,
+  "username": "johndoe",
+  "email": "john@example.com",
+  "role": "ADMIN",
+  "_links": {
+    "self": { "href": "http://localhost:8080/api/v1/users/1" },
+    "users": { "href": "http://localhost:8080/api/v1/users" }
+  }
+}
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Spring HATEOAS `EntityModel` | Plain DTOs, JSON:API, HAL-FORMS | `EntityModel` produces HAL format, which is the most widely adopted hypermedia type. Spring HATEOAS has first-class support |
+| `PagedResourcesAssembler` | Manual pagination metadata | Auto-generates `_links` with `first`, `prev`, `next`, `last` page links — less boilerplate |
+| `@Validated` on class + `@Size` on query params | Validate in service layer | Query parameter validation (e.g., max length) is an HTTP concern and belongs in the controller. `@Validated` enables method-level constraint validation on parameters |
+| API versioning via URL path (`/api/v1/`) | Header versioning, media type versioning | URL path versioning is the most visible, debuggable, and cacheable approach. Header/media-type versioning is more RESTful but less practical |
+| `ServletUriComponentsBuilder` for Location header | Hardcoded URL | Dynamically builds the URL from the current request context, respecting proxies and port forwarding |
+
+### Interview talking points
+
+**Q: What's the difference between `@Valid` and `@Validated`?**
+> `@Valid` (Jakarta standard) triggers bean validation on `@RequestBody` objects. `@Validated` (Spring extension) enables method-level validation — needed for validating `@RequestParam` and `@PathVariable` constraints. You need both: `@Validated` on the class, `@Valid` on request body parameters.
+
+**Q: Why return `EntityModel<UserResponse>` instead of just `UserResponse`?**
+> `EntityModel` wraps the DTO and adds `_links`. This enables HATEOAS — clients can discover related resources (self link, collection link) without hardcoding URLs. It's a key step toward RESTful API maturity (Richardson Level 3).
+
+**Q: How does pagination work?**
+> Spring Data's `Pageable` is automatically resolved from query parameters: `?page=0&size=20&sort=username,asc`. `PagedResourcesAssembler` converts the `Page<T>` into a `PagedModel<T>` with navigation links. Default page size (20) and max size (100) are configured in `application.properties`.
+
+**Q: Why 204 No Content on DELETE instead of 200?**
+> 204 indicates the action succeeded but there's no response body to return. This is the standard for DELETE operations. Returning 200 with the deleted entity is also valid but reveals information about a resource that no longer exists.
+
+---
+
+## 12. Feature 10 — Global Exception Handling
+
+### What was done
+A `@RestControllerAdvice` class (`GlobalExceptionHandler`) catches all exceptions thrown by controllers and converts them into consistent JSON error responses with appropriate HTTP status codes.
+
+### Why (Architect perspective)
+- **Consistent error format**: Every error response has the same structure (`timestamp`, `status`, `error`, `message`), making it easy for clients to parse errors programmatically.
+- **No stack traces leaked**: The catch-all handler logs the full stack trace server-side but returns only a generic message to the client, preventing information leakage.
+- **Centralized**: All error handling is in one place. Controllers don't need try-catch blocks.
+
+### How (Developer perspective)
+
+**`GlobalExceptionHandler.java`** — `src/main/java/.../exception/GlobalExceptionHandler.java`:
+
+| Exception | HTTP Status | Error Key | Response Message |
+|---|---|---|---|
+| `ResourceNotFoundException` | 404 | "Not Found" | Dynamic (e.g., "User not found with id 42") |
+| `MethodArgumentNotValidException` | 400 | "Validation Failed" | "Input validation failed" + `fieldErrors` map |
+| `ConstraintViolationException` | 400 | "Validation Failed" | "Input validation failed" + `fieldErrors` map |
+| `DataIntegrityViolationException` | 409 | "Conflict" | "A resource with the given unique field(s) already exists" |
+| `MethodArgumentTypeMismatchException` | 400 | "Bad Request" | "Parameter 'x' must be of type Y" |
+| `HttpMessageNotReadableException` | 400 | "Bad Request" | "Malformed JSON request body" |
+| `CallNotPermittedException` | 503 | "Service Unavailable" | "Service is temporarily unavailable, please try again later" |
+| `Exception` (catch-all) | 500 | "Internal Server Error" | "An unexpected error occurred" |
+
+**Validation error response example**:
+```json
+{
+  "timestamp": "2026-02-16T10:30:00.123",
+  "status": 400,
+  "error": "Validation Failed",
+  "message": "Input validation failed",
+  "fieldErrors": {
+    "username": "Username is required",
+    "email": "Email must be valid"
+  }
+}
+```
+
+**Key implementation detail** — extracting field name from `ConstraintViolation` path:
+```java
+ex.getConstraintViolations().forEach(violation -> {
+    String path = violation.getPropertyPath().toString();
+    String field = path.contains(".") ? path.substring(path.lastIndexOf('.') + 1) : path;
+    fieldErrors.put(field, violation.getMessage());
+});
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| `@RestControllerAdvice` | `@ControllerAdvice`, `ErrorController`, `@ExceptionHandler` per controller | `@RestControllerAdvice` combines `@ControllerAdvice` + `@ResponseBody`; global scope eliminates duplication |
+| `LinkedHashMap` for response body | Custom `ErrorResponse` POJO | Maps are flexible and match the OpenAPI `ErrorResponse` schema. A POJO would add type safety but another class to maintain |
+| `ResourceNotFoundException` ignored by circuit breaker | All exceptions recorded | A 404 is a normal business outcome (resource doesn't exist), not a system failure. Recording it would trip the circuit breaker on legitimate "not found" queries |
+| Separate handlers for `MethodArgumentNotValidException` and `ConstraintViolationException` | Single handler | They come from different validation mechanisms: `@Valid` on request bodies vs `@Validated` on method parameters. Different exception types require different extraction logic |
+| Log at WARN for 4xx, ERROR for 5xx | Uniform log level | 4xx errors are client mistakes (expected); 5xx errors are server failures (unexpected). Different log levels help operations teams filter alerts |
+
+### Interview talking points
+
+**Q: Why does `DataIntegrityViolationException` return 409 Conflict?**
+> A unique constraint violation means the client tried to create/update a resource that conflicts with an existing one. 409 Conflict is semantically correct — the request is valid in isolation but conflicts with the current state of the resource.
+
+**Q: What if the exception handler itself throws an exception?**
+> Spring Boot's default `BasicErrorController` handles it as a fallback, returning a standard error page. In practice, exception handlers should be kept simple to avoid this scenario.
+
+**Q: Why not use RFC 7807 Problem Details?**
+> Spring 6+ natively supports Problem Details (`application/problem+json`). It's a better standard, but the project uses a simpler custom format. Migrating to Problem Details would involve extending `ResponseEntityExceptionHandler` and returning `ProblemDetail` objects.
+
+**Q: How does the `CallNotPermittedException` handler fit in?**
+> When a circuit breaker is in OPEN state, Resilience4j throws `CallNotPermittedException` before the method even executes. The handler converts this to a 503, signaling the client to retry later.
+
+---
+
+## 13. Feature 11 — OpenAPI / Swagger Documentation
+
+### What was done
+Integrated `springdoc-openapi` with:
+- Swagger UI at `/swagger-ui.html`
+- OpenAPI JSON spec at `/v3/api-docs`
+- Custom `ErrorResponse` schema component
+- `@Operation`, `@ApiResponse`, `@Parameter`, `@Tag` annotations on all controller methods
+
+### Why (Architect perspective)
+- **API-first documentation**: Documentation is generated from code annotations, so it's always in sync with the implementation.
+- **Client SDK generation**: The OpenAPI spec can be used to auto-generate client SDKs in any language using tools like OpenAPI Generator.
+- **Developer experience**: Swagger UI provides an interactive sandbox for testing endpoints without Postman/curl.
+
+### How (Developer perspective)
+
+**`OpenApiConfig.java`** — `src/main/java/.../config/OpenApiConfig.java`:
+```java
+@Configuration
+public class OpenApiConfig {
+    @Bean
+    public OpenAPI openAPI() {
+        Schema<?> errorSchema = new MapSchema()
+            .addProperty("timestamp", new StringSchema().example("2026-02-16T10:30:00.000"))
+            .addProperty("status", new Schema<Integer>().type("integer").example(400))
+            .addProperty("error", new StringSchema().example("Bad Request"))
+            .addProperty("message", new StringSchema().example("Input validation failed"));
+
+        return new OpenAPI()
+            .info(new Info().title("SimpleEnterprizeProj2 API").version("1.0")
+                  .description("REST API for managing users, employees, and departments"))
+            .components(new Components().addSchemas("ErrorResponse", errorSchema));
+    }
+}
+```
+
+**Controller annotations example**:
+```java
+@Operation(summary = "Create user", description = "Create a new user")
+@ApiResponse(responseCode = "201", description = "User created successfully")
+@ApiResponse(responseCode = "400", description = "Invalid request body",
+    content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+@ApiResponse(responseCode = "409", description = "User with given unique field(s) already exists",
+    content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+```
+
+**Configuration** — `application.properties`:
+```properties
+springdoc.api-docs.path=/v3/api-docs
+springdoc.swagger-ui.path=/swagger-ui.html
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| springdoc-openapi | SpringFox (Swagger 2), hand-written OpenAPI YAML | springdoc is the maintained successor to SpringFox for Spring Boot 3+; it supports OpenAPI 3.0/3.1 natively |
+| Schema refs for error responses | Inline error schemas per endpoint | `$ref` to a shared `ErrorResponse` schema avoids duplication and keeps the spec DRY |
+| Annotations on controllers | Separate OpenAPI YAML file | Annotations stay close to the code, reducing drift. A separate YAML file gives more control but requires manual synchronization |
+
+### Interview talking points
+
+**Q: What's the difference between OpenAPI 2.0 (Swagger) and OpenAPI 3.x?**
+> OpenAPI 3.0 introduced `components` (reusable schemas, responses, parameters), request body as a separate concept (not in parameters), `oneOf`/`anyOf`/`allOf` for schema composition, and server URL definitions. OpenAPI 3.1 aligned with JSON Schema draft 2020-12.
+
+**Q: How do you version your API documentation?**
+> The OpenAPI `info.version` tracks the API version ("1.0"). URL path versioning (`/api/v1/`) ensures different API versions can have different documentation. In a multi-version setup, you'd configure separate OpenAPI groups per version.
+
+**Q: How would you secure the Swagger UI in production?**
+> Options include: (1) Disable it entirely in prod via Spring profile, (2) Protect it behind authentication (Spring Security), (3) Restrict access by IP/network. In this project, it's always available, which is appropriate for development but should be restricted in production.
+
+---
+
+## 14. Feature 12 — Redis Caching (Application-Level)
+
+### What was done
+Redis is used as an application-level cache for the `User` domain with:
+- `@Cacheable` on `findResponseById` — cache reads
+- `@CachePut` on `create`, `update`, `patch` — update cache on writes
+- `@CacheEvict` on `delete` — remove from cache on deletion
+- 10-minute TTL with JSON serialization
+
+### Why (Architect perspective)
+- **Distributed cache**: Unlike EhCache (JVM-local), Redis is shared across all application instances, ensuring cache consistency in a horizontally-scaled deployment.
+- **Reduced DB load**: Frequently accessed user profiles are served from Redis (sub-millisecond) instead of hitting the database.
+- **TTL-based expiry**: The 10-minute TTL balances freshness with performance — stale data is at most 10 minutes old.
+
+### How (Developer perspective)
+
+**`RedisCacheConfig.java`** — `src/main/java/.../config/RedisCacheConfig.java`:
+```java
+@Configuration
+@EnableCaching
+public class RedisCacheConfig {
+    @Bean
+    public RedisCacheManager cacheManager(RedisConnectionFactory connectionFactory) {
+        RedisCacheConfiguration config = RedisCacheConfiguration.defaultCacheConfig()
+                .entryTtl(Duration.ofMinutes(10))
+                .disableCachingNullValues()
+                .serializeKeysWith(SerializationPair.fromSerializer(new StringRedisSerializer()))
+                .serializeValuesWith(SerializationPair.fromSerializer(
+                    new GenericJackson2JsonRedisSerializer()));
+
+        return RedisCacheManager.builder(connectionFactory)
+                .cacheDefaults(config)
+                .build();
+    }
+}
+```
+
+**Service-layer annotations** (in `UserService`):
+```java
+@Cacheable(value = "users", key = "#id")          // Read: check cache first
+public UserResponse findResponseById(Long id) { ... }
+
+@CachePut(value = "users", key = "#result.id")    // Write: update cache after DB write
+public UserResponse create(UserRequest request) { ... }
+
+@CacheEvict(value = "users", key = "#id")          // Delete: remove from cache
+public void delete(Long id) { ... }
+```
+
+**Configuration** — `application-dev.properties`:
+```properties
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Redis only for User domain | Cache all entities | Demonstrates selective caching. Employee/Department are less frequently accessed by ID in this domain model. Adding caching is trivial (add annotations) when needed |
+| `GenericJackson2JsonRedisSerializer` | `JdkSerializationRedisSerializer`, Kryo, Protobuf | JSON is human-readable (debuggable in Redis CLI), language-agnostic, and doesn't require `Serializable` on DTOs |
+| `disableCachingNullValues()` | Allow null caching | Caching null values can prevent cache penetration (repeated lookups for non-existent IDs). Disabled here because `findResponseById` throws `ResourceNotFoundException` on null, so null is never returned |
+| `@CachePut` on writes (not `@CacheEvict`) | Evict on writes, let next read populate cache | `@CachePut` immediately refreshes the cache with the new value, eliminating a cache miss on the next read. This is the "write-through" pattern |
+| 10-minute TTL | No TTL (manual eviction only) | TTL acts as a safety net: even if a cache eviction is missed (bug, crash), stale data is at most 10 minutes old |
+
+### Interview talking points
+
+**Q: What's the difference between `@Cacheable`, `@CachePut`, and `@CacheEvict`?**
+> `@Cacheable` checks the cache before executing the method; if the key exists, the method is skipped. `@CachePut` always executes the method and puts the result in the cache (write-through). `@CacheEvict` removes the entry from the cache. They serve reads, writes, and deletes respectively.
+
+**Q: What about cache stampede (thundering herd)?**
+> If the cache entry expires and 1000 concurrent requests arrive, all 1000 hit the database simultaneously. Solutions: (1) `sync = true` on `@Cacheable` (only one thread fetches, others wait), (2) probabilistic early expiration, (3) background refresh before TTL. This project doesn't address it — acceptable for low-traffic scenarios.
+
+**Q: How do you debug what's in Redis?**
+> Use `redis-cli` with commands like `KEYS users::*`, `GET users::1`, `TTL users::1`. The JSON serializer makes the values human-readable. In production, use Redis monitoring tools (RedisInsight, Prometheus + Grafana).
+
+**Q: Why not use `@Cacheable` on `findAll` (list endpoint)?**
+> List queries with filters and pagination produce an exponential number of cache keys. The cache hit rate would be low, and cache invalidation becomes complex (any create/update/delete affects potentially all list cache entries). The Hibernate query cache handles this more efficiently at the ORM level.
+
+---
+
+## 15. Feature 13 — Hibernate L2 Cache with EhCache
+
+### What was done
+A two-level Hibernate cache is configured:
+- **L2 Entity Cache**: Caches individual entities (`User`, `Employee`, `Department`) in EhCache after they're loaded from the database.
+- **Query Cache**: Caches the result sets (entity IDs) of queries annotated with `@QueryHints(HINT_CACHEABLE)`.
+- **Update Timestamps Cache**: Tracks when tables were last modified to detect stale query cache entries.
+
+### Why (Architect perspective)
+- **Complementary to Redis**: Redis caches serialized DTOs at the service layer. Hibernate L2 cache operates at the ORM layer, caching entity objects and query results. A `findById` call can be served entirely from EhCache without any SQL execution.
+- **Transparent**: The application code doesn't need to know about L2 caching — Hibernate manages it internally. Annotations on entities enable it selectively.
+- **Query cache**: For repeated identical queries (same parameters, same pagination), the query cache stores the list of entity IDs. The entities themselves are then fetched from the entity cache, avoiding any SQL.
+
+### How (Developer perspective)
+
+**Entity annotations** (on each entity class):
+```java
+@Cacheable                                            // JPA standard: opt into L2 cache
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)   // Hibernate: strong consistency with locks
+```
+
+**Repository query hints**:
+```java
+@QueryHints(@QueryHint(name = HibernateHints.HINT_CACHEABLE, value = "true"))
+Page<User> findAll(Specification<User> spec, Pageable pageable);
+```
+
+**`HibernateCacheConfig.java`** — `src/main/java/.../config/HibernateCacheConfig.java`:
+```java
+@Configuration
+public class HibernateCacheConfig implements HibernatePropertiesCustomizer {
+    @Override
+    public void customize(Map<String, Object> hibernateProperties) {
+        hibernateProperties.put(ConfigSettings.CONFIG_URI,
+            getClass().getResource("/ehcache.xml").toURI().toString());
+    }
+}
+```
+
+**`ehcache.xml`** — `src/main/resources/ehcache.xml`:
+```xml
+<!-- User entity: 1000 entries, 10-min TTL -->
+<cache alias="org.sample.simpleenterprizeproj2.model.User">
+    <expiry><ttl unit="minutes">10</ttl></expiry>
+    <heap unit="entries">1000</heap>
+</cache>
+
+<!-- Employee entity: 2000 entries, 10-min TTL -->
+<cache alias="org.sample.simpleenterprizeproj2.model.Employee">
+    <expiry><ttl unit="minutes">10</ttl></expiry>
+    <heap unit="entries">2000</heap>
+</cache>
+
+<!-- Department entity: 200 entries, 10-min TTL -->
+<cache alias="org.sample.simpleenterprizeproj2.model.Department">
+    <expiry><ttl unit="minutes">10</ttl></expiry>
+    <heap unit="entries">200</heap>
+</cache>
+
+<!-- Query results: 500 entries, 5-min TTL -->
+<cache alias="default-query-results-region">
+    <expiry><ttl unit="minutes">5</ttl></expiry>
+    <heap unit="entries">500</heap>
+</cache>
+
+<!-- Update timestamps: no expiry (critical!) -->
+<cache alias="default-update-timestamps-region">
+    <expiry><none/></expiry>
+    <heap unit="entries">5000</heap>
+</cache>
+```
+
+**Properties** — `application.properties`:
+```properties
+spring.jpa.properties.hibernate.cache.use_second_level_cache=true
+spring.jpa.properties.hibernate.cache.use_query_cache=true
+spring.jpa.properties.hibernate.cache.region.factory_class=jcache
+spring.jpa.properties.hibernate.javax.cache.provider=org.ehcache.jsr107.EhcacheCachingProvider
+spring.jpa.properties.jakarta.persistence.sharedCache.mode=ENABLE_SELECTIVE
+```
+
+**Dev-only statistics** — `application-dev.properties`:
+```properties
+spring.jpa.properties.hibernate.generate_statistics=true
+spring.jpa.properties.hibernate.cache.use_structured_entries=true
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| EhCache 3 (via JCache/JSR-107) | Hazelcast, Infinispan, Caffeine | EhCache 3 is mature, lightweight, and runs in-process. JSR-107 compliance means it's swappable with any JCache provider |
+| `ENABLE_SELECTIVE` | `ALL`, `NONE` | Only entities annotated with `@Cacheable` are cached. This prevents accidentally caching entities that shouldn't be (e.g., audit logs, frequently-changing data) |
+| Separate TTLs for entity vs. query cache | Uniform TTL | Query results change more frequently (any insert/update/delete invalidates them), so they get a shorter TTL (5 min) than entity data (10 min) |
+| `default-update-timestamps-region` has no expiry | TTL on timestamps | This region tracks table modification times. If timestamps expire, Hibernate might serve stale query results. Setting no expiry is critical for correctness |
+| Heap-only storage | Off-heap, disk tiering | Heap is fastest. Off-heap (EhCache tiered storage) is useful for large datasets but adds GC complexity. For 1000-2000 entries, heap is sufficient |
+
+### Interview talking points
+
+**Q: How do the Hibernate L2 cache and Redis cache work together?**
+> They operate at different levels:
+> 1. **Request flow**: Controller → Service → `@Cacheable` (Redis) → Repository → Hibernate L2 (EhCache) → Database
+> 2. For `UserService.findResponseById(1)`: Redis is checked first (service layer). If miss, the repository executes a query. Hibernate checks its L2 entity cache before hitting the database.
+> 3. For `EmployeeService` (no Redis): only the Hibernate L2 cache + query cache provide caching.
+
+**Q: What's the update-timestamps region and why is it critical?**
+> When you execute `UPDATE users SET email='new' WHERE id=1`, Hibernate records a timestamp in `default-update-timestamps-region` for the `users` table. When a cached query for `users` is retrieved, Hibernate compares the query's cache time against the table's last-update timestamp. If the table was modified after the query was cached, the cached result is discarded. Without this region (or if it expires), stale query results would be served indefinitely.
+
+**Q: Why `READ_WRITE` for User/Employee and `NONSTRICT_READ_WRITE` for Department?**
+> `READ_WRITE` uses soft locks to prevent dirty reads during concurrent updates — essential for frequently-updated entities. `NONSTRICT_READ_WRITE` has no locking — it can serve stale data during a short window after an update. This is acceptable for Department, which changes rarely (organizational structure is relatively static).
+
+**Q: How do you monitor cache effectiveness?**
+> In dev mode, `hibernate.generate_statistics=true` enables stats accessible via JMX or logging. Key metrics: hit ratio, miss count, put count, eviction count. In production, integrate with Micrometer/Prometheus for real-time dashboards.
+
+---
+
+## 16. Feature 14 — Resilience4j Circuit Breakers
+
+### What was done
+Every service method is annotated with `@CircuitBreaker` from Resilience4j. Three named circuit breaker instances (`userService`, `employeeService`, `departmentService`) share a common configuration. `ResourceNotFoundException` is explicitly ignored (not counted as a failure).
+
+### Why (Architect perspective)
+- **Fail-fast**: When a downstream dependency (database, Redis) is failing, the circuit breaker prevents cascading failures by short-circuiting calls. Instead of waiting for timeouts, calls fail immediately with `CallNotPermittedException`.
+- **Self-healing**: The circuit breaker automatically transitions from OPEN → HALF_OPEN → CLOSED as the system recovers.
+- **Selective failure recording**: 404 (resource not found) is a normal business outcome, not a system failure. Ignoring it prevents legitimate "not found" queries from tripping the breaker.
+
+### How (Developer perspective)
+
+**Service annotation**:
+```java
+@CircuitBreaker(name = "userService")
+public UserResponse findResponseById(Long id) { ... }
+```
+
+**Configuration** — `application.properties`:
+```properties
+# Shared default configuration
+resilience4j.circuitbreaker.configs.default.sliding-window-type=COUNT_BASED
+resilience4j.circuitbreaker.configs.default.sliding-window-size=10
+resilience4j.circuitbreaker.configs.default.minimum-number-of-calls=5
+resilience4j.circuitbreaker.configs.default.failure-rate-threshold=50
+resilience4j.circuitbreaker.configs.default.wait-duration-in-open-state=10s
+resilience4j.circuitbreaker.configs.default.permitted-number-of-calls-in-half-open-state=3
+resilience4j.circuitbreaker.configs.default.automatic-transition-from-open-to-half-open-enabled=true
+resilience4j.circuitbreaker.configs.default.record-exceptions=java.lang.Exception
+resilience4j.circuitbreaker.configs.default.ignore-exceptions=\
+    org.sample.simpleenterprizeproj2.exception.ResourceNotFoundException
+
+# Named instances inheriting the default
+resilience4j.circuitbreaker.instances.userService.base-config=default
+resilience4j.circuitbreaker.instances.employeeService.base-config=default
+resilience4j.circuitbreaker.instances.departmentService.base-config=default
+```
+
+**Circuit breaker state machine**:
+```
+          5+ calls, <50% failures
+CLOSED ──────────────────────────── CLOSED (stay)
+   │
+   │  5+ calls, ≥50% failures
+   ▼
+ OPEN ──── (reject all calls with CallNotPermittedException)
+   │
+   │  after 10 seconds (automatic transition)
+   ▼
+HALF_OPEN ──── (permit 3 trial calls)
+   │         │
+   │ <50%    │ ≥50% failures
+   │ failures│
+   ▼         ▼
+CLOSED     OPEN
+```
+
+**Exception handling integration** — `GlobalExceptionHandler`:
+```java
+@ExceptionHandler(CallNotPermittedException.class)
+public ResponseEntity<Map<String, Object>> handleCircuitBreakerOpen(CallNotPermittedException ex) {
+    return buildResponse(HttpStatus.SERVICE_UNAVAILABLE, "Service Unavailable",
+            "Service is temporarily unavailable, please try again later");
+}
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| `COUNT_BASED` sliding window | `TIME_BASED` | Count-based is predictable: failure rate is calculated over the last N calls. Time-based calculates over the last N seconds, which can be unpredictable under varying load |
+| Window size of 10 | Larger (50+) for smoother averaging | Small window reacts faster to failures but is more sensitive to transient errors. 10 is a good balance for a microservice with moderate traffic |
+| 50% failure threshold | Higher (70-80%) for more tolerance | 50% means "half the calls are failing" — a clear signal of systemic issues. Higher thresholds would delay circuit opening |
+| `ResourceNotFoundException` ignored | Record all exceptions | A 404 is not a system failure — it's a normal "not found" response. Recording it would cause the breaker to open when users search for non-existent resources |
+| `automatic-transition-from-open-to-half-open-enabled=true` | Manual transition via actuator | Automatic transition enables self-healing without operator intervention. In critical systems, you might want manual control via management endpoints |
+| No fallback method | `@CircuitBreaker(fallbackMethod = "fallback")` | Fallbacks add complexity and can mask failures. The 503 response from `GlobalExceptionHandler` is the explicit fallback — the client knows the service is down and can retry |
+
+### Interview talking points
+
+**Q: What's the difference between a circuit breaker and a retry?**
+> A retry repeats the same call hoping for success. A circuit breaker *stops* calling the failing service entirely. They're complementary: retry handles transient errors (network blip), circuit breaker handles sustained outages (database down). Without a circuit breaker, retries can overwhelm an already-failing service.
+
+**Q: Why per-service circuit breakers instead of a global one?**
+> Fault isolation. If the department service's database table is corrupted, only `departmentService` circuit opens. User and employee endpoints continue working. A global circuit breaker would take down the entire API.
+
+**Q: How does the sliding window work?**
+> COUNT_BASED maintains a ring buffer of the last N call outcomes. After each call, it calculates the failure percentage. With `sliding-window-size=10` and `failure-rate-threshold=50`, if 5 out of the last 10 calls failed, the circuit opens. `minimum-number-of-calls=5` means the circuit won't evaluate the threshold until at least 5 calls have been recorded.
+
+**Q: What happens to in-flight requests when the circuit opens?**
+> Calls currently executing are allowed to complete. Only *new* calls are rejected with `CallNotPermittedException`. The circuit opening doesn't cancel or interrupt running requests.
+
+---
+
+## 17. Feature 15 — Observability (Logging, Correlation IDs, Security Headers)
+
+### What was done
+Three cross-cutting components provide observability and security:
+1. **`RequestLoggingFilter`**: Assigns a UUID correlation ID to every request, measures duration, logs at appropriate levels
+2. **`SecurityHeadersFilter`**: Adds security response headers to every HTTP response
+3. **`logback-spring.xml`**: Profile-aware logging configuration (text in dev, JSON in prod)
+
+### Why (Architect perspective)
+- **Correlation IDs**: In a distributed system, a single user action can generate multiple service calls. The correlation ID (stored in SLF4J MDC) ties all log entries for a single request together, enabling end-to-end tracing across log aggregation systems (ELK, Splunk, CloudWatch).
+- **Security headers**: Defense-in-depth. Even without Spring Security, response headers prevent common browser-based attacks (XSS, clickjacking, MIME sniffing).
+- **Structured logging in prod**: JSON logs are machine-parseable, enabling log aggregation pipelines to extract fields (correlationId, level, logger) without regex parsing.
+
+### How (Developer perspective)
+
+**`RequestLoggingFilter.java`** — `src/main/java/.../config/RequestLoggingFilter.java`:
+```java
+@Component
+public class RequestLoggingFilter implements Filter {
+    private static final Logger log = LoggerFactory.getLogger(RequestLoggingFilter.class);
+
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+            throws IOException, ServletException {
+        HttpServletRequest httpRequest = (HttpServletRequest) request;
+        HttpServletResponse httpResponse = (HttpServletResponse) response;
+
+        String correlationId = UUID.randomUUID().toString();
+        MDC.put("correlationId", correlationId);
+
+        long start = System.currentTimeMillis();
+        try {
+            chain.doFilter(request, response);
+        } finally {
+            long duration = System.currentTimeMillis() - start;
+            int status = httpResponse.getStatus();
+            String uri = httpRequest.getQueryString() != null
+                ? httpRequest.getRequestURI() + "?" + httpRequest.getQueryString()
+                : httpRequest.getRequestURI();
+
+            if (status >= 500) log.error("{} {} {} {}ms", httpRequest.getMethod(), uri, status, duration);
+            else if (status >= 400) log.warn("{} {} {} {}ms", httpRequest.getMethod(), uri, status, duration);
+            else log.info("{} {} {} {}ms", httpRequest.getMethod(), uri, status, duration);
+
+            MDC.clear();
+        }
+    }
+}
+```
+
+**`SecurityHeadersFilter.java`** — `src/main/java/.../config/SecurityHeadersFilter.java`:
+```java
+@Component
+public class SecurityHeadersFilter implements Filter {
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+            throws IOException, ServletException {
+        HttpServletResponse httpResponse = (HttpServletResponse) response;
+        httpResponse.setHeader("X-Content-Type-Options", "nosniff");
+        httpResponse.setHeader("X-Frame-Options", "DENY");
+        httpResponse.setHeader("X-XSS-Protection", "1; mode=block");
+        httpResponse.setHeader("Content-Security-Policy", "default-src 'none'");
+        httpResponse.setHeader("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate");
+        chain.doFilter(request, response);
+    }
+}
+```
+
+**`logback-spring.xml`** — `src/main/resources/logback-spring.xml`:
+```xml
+<configuration>
+    <!-- Dev: human-readable with correlation ID -->
+    <springProfile name="dev">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{HH:mm:ss.SSS} [%thread] [%X{correlationId}] %-5level %logger{36} - %msg%n</pattern>
+            </encoder>
+        </appender>
+        <logger name="org.sample.simpleenterprizeproj2" level="DEBUG"/>
+        <root level="INFO"><appender-ref ref="CONSOLE"/></root>
+    </springProfile>
+
+    <!-- Prod: structured JSON for log aggregation -->
+    <springProfile name="prod">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="ch.qos.logback.classic.encoder.JsonEncoder"/>
+        </appender>
+        <logger name="org.sample.simpleenterprizeproj2" level="INFO"/>
+        <root level="INFO"><appender-ref ref="CONSOLE"/></root>
+    </springProfile>
+</configuration>
+```
+
+**Dev log output example**:
+```
+10:30:15.123 [http-nio-8080-exec-1] [a1b2c3d4-e5f6-7890-abcd-ef1234567890] INFO  RequestLoggingFilter - GET /api/v1/users?page=0 200 45ms
+```
+
+### Security headers explained
+
+| Header | Value | Protection Against |
+|---|---|---|
+| `X-Content-Type-Options` | `nosniff` | MIME-type sniffing attacks (browser respects declared Content-Type) |
+| `X-Frame-Options` | `DENY` | Clickjacking (prevents embedding in iframes) |
+| `X-XSS-Protection` | `1; mode=block` | Reflected XSS (legacy browser XSS filter) |
+| `Content-Security-Policy` | `default-src 'none'` | XSS, data injection (no resources loaded unless explicitly allowed) |
+| `Cache-Control` | `no-cache, no-store, max-age=0, must-revalidate` | Sensitive data caching (browsers/proxies don't cache API responses) |
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| `jakarta.servlet.Filter` | Spring `OncePerRequestFilter`, `HandlerInterceptor` | `Filter` operates at the servlet level (before/after Spring MVC), ensuring every request is covered including error paths |
+| UUID for correlation ID | Incoming `X-Request-Id` header, Zipkin trace ID | UUID is self-contained (no external dependency). In a microservice mesh, you'd propagate an incoming `X-Request-Id` or use distributed tracing (Zipkin/Jaeger) |
+| `MDC.clear()` in `finally` block | Don't clear | MDC is thread-local. Without clearing, a thread returned to the pool could leak the correlation ID to the next request (thread reuse in servlet containers) |
+| `JsonEncoder` for prod | Custom JSON layout, Logstash encoder | Logback's built-in `JsonEncoder` is simple and sufficient. `LogstashEncoder` adds more fields (stack trace formatting, custom fields) but requires an extra dependency |
+| `Content-Security-Policy: default-src 'none'` | More permissive CSP | For a REST API (no HTML/JS served), `default-src 'none'` is maximally restrictive. A web app serving HTML would need `script-src`, `style-src`, etc. |
+
+### Interview talking points
+
+**Q: Why use MDC instead of passing correlation ID as a method parameter?**
+> MDC (Mapped Diagnostic Context) is thread-local storage integrated with SLF4J. Any `log.info()` call anywhere in the call stack automatically includes the correlation ID in the log output — no need to pass it through every method signature. This is especially powerful in deep call stacks.
+
+**Q: What's the risk of `MDC.clear()` vs `MDC.remove("correlationId")`?**
+> `MDC.clear()` removes ALL MDC entries, which could wipe out entries set by other filters. `MDC.remove("correlationId")` is safer — it only removes the specific key. In this project, since `RequestLoggingFilter` is the only MDC user, `clear()` is fine.
+
+**Q: Are security headers sufficient without Spring Security?**
+> For a REST API, these headers provide good baseline protection. Spring Security adds authentication, authorization, CSRF protection, CORS configuration, and session management. The headers here address browser-based attacks, while Spring Security addresses access control.
+
+**Q: How would you add distributed tracing?**
+> Add `micrometer-tracing-bridge-brave` (or OpenTelemetry) to the classpath. Spring Boot auto-configures trace ID and span ID propagation. The correlation ID filter becomes unnecessary as the tracing library handles it with richer context (parent-child spans, cross-service propagation).
+
+---
+
+## 18. Cross-Cutting Concerns Summary
+
+### How the 15 features interact
+
+```
+Request Flow:
+1. HTTP Request arrives
+2. SecurityHeadersFilter adds response headers
+3. RequestLoggingFilter generates correlationId, starts timer
+4. @Validated controller validates @RequestParam (ConstraintViolationException → 400)
+5. @Valid validates @RequestBody (MethodArgumentNotValidException → 400)
+6. Controller calls Service method
+7. @CircuitBreaker checks circuit state (CallNotPermittedException → 503 if OPEN)
+8. @Cacheable checks Redis (hit → return cached DTO, skip steps 9-12)
+9. @Transactional opens/joins transaction
+10. Repository executes query with Specification filters
+11. @QueryHints checks Hibernate query cache (hit → return entity IDs from EhCache)
+12. Hibernate checks L2 entity cache (hit → return cached entity, no SQL)
+13. If cache miss → SQL executes against H2 (schema managed by Liquibase)
+14. Mapper converts Entity → Response DTO (with sanitization on writes)
+15. HATEOAS links added by controller
+16. Response returned
+17. RequestLoggingFilter logs method, URI, status, duration
+18. GlobalExceptionHandler catches any exceptions → consistent JSON error
+```
+
+### Cache layers (from fastest to slowest)
+
+| Layer | Technology | Scope | TTL | Hit = |
+|---|---|---|---|---|
+| 1. Application cache | Redis | Distributed | 10 min | Skip steps 9-13 |
+| 2. Hibernate query cache | EhCache | JVM-local | 5 min | Skip SQL, use entity IDs |
+| 3. Hibernate entity cache | EhCache | JVM-local | 10 min | Skip SQL for entity load |
+| 4. Database | H2 + HikariCP | Persistent | — | Full SQL execution |
+
+### Validation layers (defense-in-depth)
+
+| Layer | Mechanism | Example |
+|---|---|---|
+| 1. Controller | `@Size(max=255)` on query params | Reject oversized search terms |
+| 2. DTO | `@NotBlank`, `@Email`, `@Pattern` | Reject invalid format before service layer |
+| 3. Mapper | `SanitizationUtils.sanitize()` | Encode HTML entities (XSS prevention) |
+| 4. Specification | `SanitizationUtils.escapeWildcards()` | Escape LIKE wildcards |
+| 5. Entity | `@Column(nullable=false, unique=true)` | JPA constraints |
+| 6. Database | `NOT NULL`, `UNIQUE` constraints (Liquibase) | Last line of defense |
+
+### Profile-aware behavior
+
+| Concern | Dev Profile | Prod Profile |
+|---|---|---|
+| Database | H2 in-memory (`mem:testdb`) | H2 file-based (`file:./data/proddb`) |
+| H2 Console | Enabled at `/h2-console` | Disabled |
+| SQL logging | `show-sql=true` | `show-sql=false` |
+| HikariCP pool | max=5, min=2 | max=20, min=5 |
+| Hibernate stats | Enabled | Disabled |
+| Log format | Text with correlationId | JSON (structured) |
+| Log level | DEBUG for app package | INFO for app package |
+
+---
+
+## 19. Full API Endpoint Reference
+
+### User Endpoints
+
+| Method | Path | Body | Response | Status Codes |
+|---|---|---|---|---|
+| GET | `/api/v1/users` | — | `PagedModel<EntityModel<UserResponse>>` | 200, 400, 500 |
+| GET | `/api/v1/users/{id}` | — | `EntityModel<UserResponse>` | 200, 404, 500 |
+| POST | `/api/v1/users` | `UserRequest` | `EntityModel<UserResponse>` | 201, 400, 409, 500 |
+| PUT | `/api/v1/users/{id}` | `UserRequest` | `EntityModel<UserResponse>` | 200, 400, 404, 409, 500 |
+| PATCH | `/api/v1/users/{id}` | `UserPatchRequest` | `EntityModel<UserResponse>` | 200, 400, 404, 409, 500 |
+| DELETE | `/api/v1/users/{id}` | — | — | 204, 404, 500 |
+
+**Query parameters for GET list**: `username`, `email`, `role`, `page`, `size`, `sort`
+
+### Employee Endpoints
+
+| Method | Path | Body | Response | Status Codes |
+|---|---|---|---|---|
+| GET | `/api/v1/employees` | — | `PagedModel<EntityModel<EmployeeResponse>>` | 200, 400, 500 |
+| GET | `/api/v1/employees/{id}` | — | `EntityModel<EmployeeResponse>` | 200, 404, 500 |
+| POST | `/api/v1/employees` | `EmployeeRequest` | `EntityModel<EmployeeResponse>` | 201, 400, 409, 500 |
+| PUT | `/api/v1/employees/{id}` | `EmployeeRequest` | `EntityModel<EmployeeResponse>` | 200, 400, 404, 409, 500 |
+| PATCH | `/api/v1/employees/{id}` | `EmployeePatchRequest` | `EntityModel<EmployeeResponse>` | 200, 400, 404, 409, 500 |
+| DELETE | `/api/v1/employees/{id}` | — | — | 204, 404, 500 |
+
+**Query parameters for GET list**: `firstName`, `lastName`, `email`, `departmentId`, `page`, `size`, `sort`
+
+### Department Endpoints
+
+| Method | Path | Body | Response | Status Codes |
+|---|---|---|---|---|
+| GET | `/api/v1/departments` | — | `PagedModel<EntityModel<DepartmentResponse>>` | 200, 400, 500 |
+| GET | `/api/v1/departments/{id}` | — | `EntityModel<DepartmentResponse>` | 200, 404, 500 |
+| POST | `/api/v1/departments` | `DepartmentRequest` | `EntityModel<DepartmentResponse>` | 201, 400, 409, 500 |
+| PUT | `/api/v1/departments/{id}` | `DepartmentRequest` | `EntityModel<DepartmentResponse>` | 200, 400, 404, 409, 500 |
+| PATCH | `/api/v1/departments/{id}` | `DepartmentPatchRequest` | `EntityModel<DepartmentResponse>` | 200, 400, 404, 409, 500 |
+| DELETE | `/api/v1/departments/{id}` | — | — | 204, 404, 500 |
+
+**Query parameters for GET list**: `name`, `page`, `size`, `sort`
+
+### Utility Endpoints
+
+| Path | Description |
+|---|---|
+| `/swagger-ui.html` | Interactive API documentation |
+| `/v3/api-docs` | OpenAPI 3.0 JSON specification |
+| `/h2-console` | Database admin console (dev profile only) |
+
+---
+
+## HikariCP Connection Pool Configuration
+
+**`DatabaseConfig.java`** — `src/main/java/.../config/DatabaseConfig.java`:
+```java
+@Configuration
+public class DatabaseConfig {
+    @Bean
+    @ConfigurationProperties(prefix = "spring.datasource.hikari")
+    public HikariDataSource dataSource(DataSourceProperties properties) {
+        return properties.initializeDataSourceBuilder()
+                .type(HikariDataSource.class)
+                .build();
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void logDataSourceInfo(ApplicationReadyEvent event) {
+        HikariDataSource ds = event.getApplicationContext().getBean(HikariDataSource.class);
+        logger.info("HikariCP pool '{}' active — max size: {}, min idle: {}",
+                ds.getPoolName(), ds.getMaximumPoolSize(), ds.getMinimumIdle());
+    }
+}
+```
+
+| Setting | Dev | Prod | Why |
+|---|---|---|---|
+| `maximum-pool-size` | 5 | 20 | Dev has minimal load; prod handles concurrent users |
+| `minimum-idle` | 2 | 5 | Keep connections warm for fast response |
+| `idle-timeout` | 30s | 30s | Return idle connections to the pool |
+| `max-lifetime` | 10min | 10min | Prevent stale connections (firewalls, DB restarts) |
+| `connection-timeout` | 20s | 20s | Max wait for a connection from the pool |
+
+### Interview talking points for HikariCP
+
+**Q: How do you size the connection pool?**
+> The formula `connections = (core_count * 2) + effective_spindle_count` works for most cases. For an SSD-backed database, `core_count * 2` is a good starting point. Monitor `HikariPoolMXBean` for pending threads and active connections. If `pending > 0` frequently, increase the pool.
+
+**Q: Why not set `maximum-pool-size` very high (e.g., 100)?**
+> Each connection consumes memory on both the app and database side. Too many connections cause contention (context switching, lock waits). A smaller pool with queuing often outperforms a large pool.
+
+---
+
+*This document covers all 15 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*
