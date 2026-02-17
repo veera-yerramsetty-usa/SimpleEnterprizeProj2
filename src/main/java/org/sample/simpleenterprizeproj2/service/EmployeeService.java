@@ -10,6 +10,7 @@ import org.sample.simpleenterprizeproj2.model.Department;
 import org.sample.simpleenterprizeproj2.model.Employee;
 import org.sample.simpleenterprizeproj2.repository.EmployeeRepository;
 import org.sample.simpleenterprizeproj2.specification.EmployeeSpecification;
+import io.github.resilience4j.bulkhead.annotation.Bulkhead;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
@@ -37,6 +38,7 @@ public class EmployeeService {
     }
 
     @CircuitBreaker(name = "employeeService", fallbackMethod = "findAllFallback")
+    @Bulkhead(name = "employeeService")
     @Retry(name = "employeeService")
     public Page<EmployeeResponse> findAll(String firstName, String lastName, String email,
                                           Long departmentId, Pageable pageable) {
@@ -46,12 +48,14 @@ public class EmployeeService {
     }
 
     @CircuitBreaker(name = "employeeService", fallbackMethod = "findResponseByIdFallback")
+    @Bulkhead(name = "employeeService")
     @Retry(name = "employeeService")
     public EmployeeResponse findResponseById(Long id) {
         return employeeMapper.toResponse(findEntityById(id));
     }
 
     @CircuitBreaker(name = "employeeService", fallbackMethod = "findEntityByIdFallback")
+    @Bulkhead(name = "employeeService")
     @Retry(name = "employeeService")
     public Employee findEntityById(Long id) {
         return employeeRepository.findById(id)
@@ -59,6 +63,7 @@ public class EmployeeService {
     }
 
     @CircuitBreaker(name = "employeeService", fallbackMethod = "createFallback")
+    @Bulkhead(name = "employeeService")
     @Retry(name = "employeeService")
     @Transactional
     public EmployeeResponse create(EmployeeRequest request) {
@@ -70,6 +75,7 @@ public class EmployeeService {
     }
 
     @CircuitBreaker(name = "employeeService", fallbackMethod = "updateFallback")
+    @Bulkhead(name = "employeeService")
     @Retry(name = "employeeService")
     @Transactional
     public EmployeeResponse update(Long id, EmployeeRequest request) {
@@ -82,6 +88,7 @@ public class EmployeeService {
     }
 
     @CircuitBreaker(name = "employeeService", fallbackMethod = "patchFallback")
+    @Bulkhead(name = "employeeService")
     @Retry(name = "employeeService")
     @Transactional
     public EmployeeResponse patch(Long id, EmployeePatchRequest request) {
@@ -96,6 +103,7 @@ public class EmployeeService {
     }
 
     @CircuitBreaker(name = "employeeService", fallbackMethod = "deleteFallback")
+    @Bulkhead(name = "employeeService")
     @Retry(name = "employeeService")
     @Transactional
     public void delete(Long id) {

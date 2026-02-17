@@ -1,5 +1,6 @@
 package org.sample.simpleenterprizeproj2.exception;
 
+import io.github.resilience4j.bulkhead.BulkheadFullException;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
@@ -87,6 +88,13 @@ public class GlobalExceptionHandler {
         log.warn("Circuit breaker open: {}", ex.getMessage());
         return buildResponse(HttpStatus.SERVICE_UNAVAILABLE, "Service Unavailable",
                 "Service is temporarily unavailable, please try again later");
+    }
+
+    @ExceptionHandler(BulkheadFullException.class)
+    public ResponseEntity<Map<String, Object>> handleBulkheadFull(BulkheadFullException ex) {
+        log.warn("Bulkhead full: {}", ex.getMessage());
+        return buildResponse(HttpStatus.TOO_MANY_REQUESTS, "Too Many Requests",
+                "Too many concurrent requests, please try again later");
     }
 
     @ExceptionHandler(Exception.class)

@@ -26,8 +26,9 @@
 16. [Feature 14 — Resilience4j Circuit Breakers](#16-feature-14--resilience4j-circuit-breakers)
 17. [Feature 15 — Observability (Logging, Correlation IDs, Security Headers)](#17-feature-15--observability-logging-correlation-ids-security-headers)
 18. [Feature 16 — Resilience4j Retry & Fallback](#18-feature-16--resilience4j-retry--fallback)
-19. [Cross-Cutting Concerns Summary](#19-cross-cutting-concerns-summary)
-20. [Full API Endpoint Reference](#20-full-api-endpoint-reference)
+19. [Feature 17 — Resilience4j Bulkhead (Concurrency Limiter)](#19-feature-17--resilience4j-bulkhead-concurrency-limiter)
+20. [Cross-Cutting Concerns Summary](#20-cross-cutting-concerns-summary)
+21. [Full API Endpoint Reference](#21-full-api-endpoint-reference)
 
 ---
 
@@ -70,7 +71,7 @@
                                  │
                     ┌────────────▼────────────┐
                     │    @Service Layer         │  @Transactional, @CircuitBreaker,
-                    │    (Business Logic)       │  @Cacheable/@CachePut/@CacheEvict
+                    │    (Business Logic)       │  @Bulkhead, @Retry, @Cacheable
                     └─────┬─────────────┬─────┘
                           │             │
               ┌───────────▼──┐   ┌──────▼──────────┐
@@ -857,6 +858,7 @@ A `@RestControllerAdvice` class (`GlobalExceptionHandler`) catches all exception
 | `MethodArgumentTypeMismatchException` | 400 | "Bad Request" | "Parameter 'x' must be of type Y" |
 | `HttpMessageNotReadableException` | 400 | "Bad Request" | "Malformed JSON request body" |
 | `CallNotPermittedException` | 503 | "Service Unavailable" | "Service is temporarily unavailable, please try again later" |
+| `BulkheadFullException` | 429 | "Too Many Requests" | "Too many concurrent requests, please try again later" |
 | `Exception` (catch-all) | 500 | "Internal Server Error" | "An unexpected error occurred" |
 
 **Validation error response example**:
@@ -1451,9 +1453,9 @@ private UserResponse createFallback(UserRequest request, Throwable t) {
 
 **Retry configuration** — `application.properties`:
 ```properties
-# Decorator ordering: CircuitBreaker(outer) → Retry(inner)
+# Decorator ordering: CircuitBreaker(outer=1) → Bulkhead(middle=2147483646) → Retry(inner=2147483647)
 resilience4j.circuitbreaker.circuitBreakerAspectOrder=1
-resilience4j.retry.retryAspectOrder=2
+resilience4j.retry.retryAspectOrder=2147483647
 
 # Retry defaults
 resilience4j.retry.configs.default.max-attempts=3
@@ -1547,9 +1549,119 @@ Call → CircuitBreaker (check state)
 
 ---
 
-## 19. Cross-Cutting Concerns Summary
+## 19. Feature 17 — Resilience4j Bulkhead (Concurrency Limiter)
 
-### How the 16 features interact
+### What was done
+Added `@Bulkhead` annotations (semaphore type) to all 21 service methods across 3 services. Each service has a named bulkhead instance with a configured maximum number of concurrent calls. When the limit is reached, additional calls are immediately rejected with `BulkheadFullException`, which maps to HTTP 429 Too Many Requests. The decorator ordering is `CircuitBreaker(order=1) → Bulkhead(order=2147483646, hardcoded) → Retry(order=2147483647)`.
+
+### Why (Architect perspective)
+- **Resource isolation**: Without bulkheads, a slow or overloaded service (e.g., a slow department query) can consume all available threads, starving other services. Bulkheads partition thread usage per service, ensuring one degraded service doesn't cascade into a full system outage.
+- **Backpressure signal**: HTTP 429 tells clients explicitly that the server is at capacity — enabling client-side throttling, retry-after logic, or load balancer rerouting.
+- **Semaphore vs. thread-pool**: Semaphore bulkhead uses a simple counter on the calling thread. Thread-pool bulkhead executes calls on a dedicated thread pool. Semaphore is chosen here because (1) it's lightweight (no thread pool overhead), (2) it preserves `@Transactional` thread-local context (thread-pool would lose it), and (3) it's sufficient for limiting concurrency in a single-instance monolith.
+- **Fail-fast (`maxWaitDuration=0`)**: When the bulkhead is full, requests fail immediately rather than queuing. This prevents request pileup and keeps latency predictable. In high-throughput systems, a short wait (e.g., 100ms) might be acceptable to smooth traffic bursts.
+
+### How (Developer perspective)
+
+**Service annotation pattern** (all 3 services follow this):
+```java
+@CircuitBreaker(name = "userService", fallbackMethod = "findAllFallback")  // order 1
+@Bulkhead(name = "userService")                                            // order 2
+@Retry(name = "userService")                                               // order 3
+public Page<UserResponse> findAll(...) { ... }
+```
+
+**Configuration** — `application.properties`:
+```properties
+# Decorator ordering: CircuitBreaker(outer=1) → Bulkhead(middle=2147483646, hardcoded) → Retry(inner=2147483647)
+# Note: Resilience4j 2.3.0 hardcodes bulkhead aspect order at Ordered.LOWEST_PRECEDENCE - 1 (2147483646)
+# with no setter, so we set retry order to LOWEST_PRECEDENCE (2147483647) to ensure it's innermost
+resilience4j.circuitbreaker.circuitBreakerAspectOrder=1
+resilience4j.retry.retryAspectOrder=2147483647
+
+# Bulkhead defaults (semaphore type)
+resilience4j.bulkhead.configs.default.max-concurrent-calls=10
+resilience4j.bulkhead.configs.default.max-wait-duration=0ms
+
+# Named instances
+resilience4j.bulkhead.instances.userService.base-config=default
+resilience4j.bulkhead.instances.employeeService.base-config=default
+resilience4j.bulkhead.instances.departmentService.base-config=default
+resilience4j.bulkhead.instances.departmentService.max-concurrent-calls=5
+```
+
+**Exception handling** — `GlobalExceptionHandler.java`:
+```java
+@ExceptionHandler(BulkheadFullException.class)
+public ResponseEntity<Map<String, Object>> handleBulkheadFull(BulkheadFullException ex) {
+    log.warn("Bulkhead full: {}", ex.getMessage());
+    return buildResponse(HttpStatus.TOO_MANY_REQUESTS, "Too Many Requests",
+            "Too many concurrent requests, please try again later");
+}
+```
+
+**Execution flow with all three decorators**:
+```
+Call → CircuitBreaker (check state)
+         │
+         ├─ OPEN → fallbackMethod() immediately
+         │
+         └─ CLOSED/HALF_OPEN → Bulkhead (check permits)
+                                  │
+                                  ├─ FULL → BulkheadFullException → CB fallback → 429
+                                  │
+                                  └─ PERMIT acquired → Retry
+                                                        │
+                                                        ├─ Attempt 1 → success → release permit → return
+                                                        ├─ Attempt 1 → fail → wait 500ms (holding permit)
+                                                        ├─ Attempt 2 → success → release permit → return
+                                                        ├─ Attempt 2 → fail → wait 1000ms (holding permit)
+                                                        ├─ Attempt 3 → success → release permit → return
+                                                        └─ Attempt 3 → fail → release permit → exception → CB records failure → fallback
+```
+
+### Concurrency limits per service
+
+| Instance | maxConcurrentCalls | maxWaitDuration | Rationale |
+|---|---|---|---|
+| `userService` | 10 | 0ms (fail-fast) | Primary entity, moderate traffic |
+| `employeeService` | 10 | 0ms (fail-fast) | Primary entity, moderate traffic |
+| `departmentService` | 5 | 0ms (fail-fast) | Reference data, lower traffic, fewer expected concurrent lookups |
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Semaphore bulkhead | Thread-pool bulkhead | Semaphore is lightweight and preserves `@Transactional` thread-local context. Thread-pool isolates execution but breaks Spring's thread-local transaction binding |
+| `maxWaitDuration=0ms` | Short wait (100-500ms) | Fail-fast prevents request pileup under load. A wait duration would smooth bursts but increases tail latency and holds threads longer |
+| Bulkhead between CB and Retry | Bulkhead outside CB, or inside Retry | Between CB and Retry: the CB can reject without acquiring a permit (efficient), and each retry holds the same permit (preventing permit exhaustion from retries) |
+| 10 concurrent calls for user/employee | Higher (50+) or lower (3-5) | 10 is conservative — prevents thread exhaustion while allowing reasonable concurrency. Tune based on load testing. In production, this should be derived from HikariCP pool size and expected concurrency |
+| 5 for department | Same as others (10) | Department is a reference entity with fewer concurrent mutations. Lower limit reserves capacity for user/employee operations |
+| Per-service instances | Global bulkhead | Per-service isolation: a burst of department queries doesn't block user operations. Global would be simpler but loses fault isolation |
+
+### Interview talking points
+
+**Q: What's the difference between a semaphore bulkhead and a thread-pool bulkhead?**
+> **Semaphore**: Uses an `AtomicInteger` counter on the calling thread. When a call enters, the counter increments; when it exits, it decrements. If the counter equals `maxConcurrentCalls`, new calls are rejected. The call executes on the original thread.
+> **Thread-pool**: Submits the call to a dedicated `ThreadPoolExecutor` with a bounded queue. If the pool and queue are full, new calls are rejected. The call executes on a pool thread, not the calling thread.
+> Semaphore is preferred for synchronous/blocking code (like JPA + `@Transactional`) because it preserves thread-local state. Thread-pool is better for isolating truly independent workloads (e.g., calling external HTTP APIs) where thread-local context doesn't matter.
+
+**Q: Why does the bulkhead sit between the circuit breaker and retry?**
+> Circuit breaker (outermost) can reject calls without consuming a bulkhead permit — efficient when the circuit is OPEN. Retry (innermost) retries *within* the same bulkhead permit — a 3-attempt retry uses 1 permit, not 3. If retry were outside the bulkhead, each retry attempt would acquire a separate permit, potentially exhausting the bulkhead on retries alone.
+
+**Q: What happens when a retry holds a bulkhead permit during backoff?**
+> The permit is held during the entire retry sequence (including wait durations). A 3-attempt retry with 500ms + 1000ms backoff holds the permit for up to ~1.5 seconds. This reduces effective throughput during retries but prevents additional load on an already-struggling system.
+
+**Q: How would you size the `maxConcurrentCalls` in production?**
+> Start with `HikariCP maxPoolSize` as an upper bound — there's no point allowing more concurrent service calls than available database connections. Then factor in: (1) number of service methods sharing the pool, (2) expected request latency, (3) target throughput. Load test with realistic traffic and adjust. Monitor `resilience4j.bulkhead.available.concurrent.calls` via Micrometer/Prometheus.
+
+**Q: Why 429 Too Many Requests instead of 503 Service Unavailable?**
+> 429 signals that the *client* is sending too many requests — it's a rate/concurrency limit, not a server failure. 503 means the server is broken or overloaded. Clients handle them differently: 429 suggests backing off and retrying, 503 suggests the service may be down. Some API gateways and load balancers also treat 429 and 503 differently for routing decisions.
+
+---
+
+## 20. Cross-Cutting Concerns Summary
+
+### How the 17 features interact
 
 ```
 Request Flow:
@@ -1560,18 +1672,19 @@ Request Flow:
 5. @Valid validates @RequestBody (MethodArgumentNotValidException → 400)
 6. Controller calls Service method
 7. @CircuitBreaker checks circuit state (OPEN → fallbackMethod → 503 or Page.empty)
-8. @Retry attempts call (up to 3x with exponential backoff on failure)
-9. @Cacheable checks Redis (hit → return cached DTO, skip steps 10-14)
-10. @Transactional opens/joins transaction
-11. Repository executes query with Specification filters
-12. @QueryHints checks Hibernate query cache (hit → return entity IDs from EhCache)
-13. Hibernate checks L2 entity cache (hit → return cached entity, no SQL)
-14. If cache miss → SQL executes against H2 (schema managed by Liquibase)
-15. Mapper converts Entity → Response DTO (with sanitization on writes)
-16. HATEOAS links added by controller
-17. Response returned
-18. RequestLoggingFilter logs method, URI, status, duration
-19. GlobalExceptionHandler catches any exceptions → consistent JSON error
+8. @Bulkhead checks permits (FULL → BulkheadFullException → 429)
+9. @Retry attempts call (up to 3x with exponential backoff on failure)
+10. @Cacheable checks Redis (hit → return cached DTO, skip steps 11-15)
+11. @Transactional opens/joins transaction
+12. Repository executes query with Specification filters
+13. @QueryHints checks Hibernate query cache (hit → return entity IDs from EhCache)
+14. Hibernate checks L2 entity cache (hit → return cached entity, no SQL)
+15. If cache miss → SQL executes against H2 (schema managed by Liquibase)
+16. Mapper converts Entity → Response DTO (with sanitization on writes)
+17. HATEOAS links added by controller
+18. Response returned
+19. RequestLoggingFilter logs method, URI, status, duration
+20. GlobalExceptionHandler catches any exceptions → consistent JSON error
 ```
 
 ### Cache layers (from fastest to slowest)
@@ -1608,7 +1721,7 @@ Request Flow:
 
 ---
 
-## 20. Full API Endpoint Reference
+## 21. Full API Endpoint Reference
 
 ### User Endpoints
 
@@ -1700,4 +1813,4 @@ public class DatabaseConfig {
 
 ---
 
-*This document covers all 16 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*
+*This document covers all 17 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*

@@ -9,6 +9,7 @@ import org.sample.simpleenterprizeproj2.mapper.DepartmentMapper;
 import org.sample.simpleenterprizeproj2.model.Department;
 import org.sample.simpleenterprizeproj2.repository.DepartmentRepository;
 import org.sample.simpleenterprizeproj2.specification.DepartmentSpecification;
+import io.github.resilience4j.bulkhead.annotation.Bulkhead;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
@@ -33,6 +34,7 @@ public class DepartmentService {
     }
 
     @CircuitBreaker(name = "departmentService", fallbackMethod = "findAllFallback")
+    @Bulkhead(name = "departmentService")
     @Retry(name = "departmentService")
     public Page<DepartmentResponse> findAll(String name, Pageable pageable) {
         return departmentRepository.findAll(DepartmentSpecification.build(name), pageable)
@@ -40,12 +42,14 @@ public class DepartmentService {
     }
 
     @CircuitBreaker(name = "departmentService", fallbackMethod = "findResponseByIdFallback")
+    @Bulkhead(name = "departmentService")
     @Retry(name = "departmentService")
     public DepartmentResponse findResponseById(Long id) {
         return departmentMapper.toResponse(findEntityById(id));
     }
 
     @CircuitBreaker(name = "departmentService", fallbackMethod = "findEntityByIdFallback")
+    @Bulkhead(name = "departmentService")
     @Retry(name = "departmentService")
     public Department findEntityById(Long id) {
         return departmentRepository.findById(id)
@@ -53,6 +57,7 @@ public class DepartmentService {
     }
 
     @CircuitBreaker(name = "departmentService", fallbackMethod = "createFallback")
+    @Bulkhead(name = "departmentService")
     @Retry(name = "departmentService")
     @Transactional
     public DepartmentResponse create(DepartmentRequest request) {
@@ -63,6 +68,7 @@ public class DepartmentService {
     }
 
     @CircuitBreaker(name = "departmentService", fallbackMethod = "updateFallback")
+    @Bulkhead(name = "departmentService")
     @Retry(name = "departmentService")
     @Transactional
     public DepartmentResponse update(Long id, DepartmentRequest request) {
@@ -74,6 +80,7 @@ public class DepartmentService {
     }
 
     @CircuitBreaker(name = "departmentService", fallbackMethod = "patchFallback")
+    @Bulkhead(name = "departmentService")
     @Retry(name = "departmentService")
     @Transactional
     public DepartmentResponse patch(Long id, DepartmentPatchRequest request) {
@@ -85,6 +92,7 @@ public class DepartmentService {
     }
 
     @CircuitBreaker(name = "departmentService", fallbackMethod = "deleteFallback")
+    @Bulkhead(name = "departmentService")
     @Retry(name = "departmentService")
     @Transactional
     public void delete(Long id) {

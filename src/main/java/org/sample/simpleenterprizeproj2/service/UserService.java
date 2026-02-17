@@ -9,6 +9,7 @@ import org.sample.simpleenterprizeproj2.mapper.UserMapper;
 import org.sample.simpleenterprizeproj2.model.User;
 import org.sample.simpleenterprizeproj2.repository.UserRepository;
 import org.sample.simpleenterprizeproj2.specification.UserSpecification;
+import io.github.resilience4j.bulkhead.annotation.Bulkhead;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
@@ -37,6 +38,7 @@ public class UserService {
     }
 
     @CircuitBreaker(name = "userService", fallbackMethod = "findAllFallback")
+    @Bulkhead(name = "userService")
     @Retry(name = "userService")
     public Page<UserResponse> findAll(String username, String email, String role, Pageable pageable) {
         return userRepository.findAll(UserSpecification.build(username, email, role), pageable)
@@ -44,6 +46,7 @@ public class UserService {
     }
 
     @CircuitBreaker(name = "userService", fallbackMethod = "findResponseByIdFallback")
+    @Bulkhead(name = "userService")
     @Retry(name = "userService")
     @Cacheable(value = CACHE_NAME, key = "#id")
     public UserResponse findResponseById(Long id) {
@@ -51,6 +54,7 @@ public class UserService {
     }
 
     @CircuitBreaker(name = "userService", fallbackMethod = "findEntityByIdFallback")
+    @Bulkhead(name = "userService")
     @Retry(name = "userService")
     public User findEntityById(Long id) {
         return userRepository.findById(id)
@@ -58,6 +62,7 @@ public class UserService {
     }
 
     @CircuitBreaker(name = "userService", fallbackMethod = "createFallback")
+    @Bulkhead(name = "userService")
     @Retry(name = "userService")
     @Transactional
     @CachePut(value = CACHE_NAME, key = "#result.id")
@@ -69,6 +74,7 @@ public class UserService {
     }
 
     @CircuitBreaker(name = "userService", fallbackMethod = "updateFallback")
+    @Bulkhead(name = "userService")
     @Retry(name = "userService")
     @Transactional
     @CachePut(value = CACHE_NAME, key = "#id")
@@ -81,6 +87,7 @@ public class UserService {
     }
 
     @CircuitBreaker(name = "userService", fallbackMethod = "patchFallback")
+    @Bulkhead(name = "userService")
     @Retry(name = "userService")
     @Transactional
     @CachePut(value = CACHE_NAME, key = "#id")
@@ -93,6 +100,7 @@ public class UserService {
     }
 
     @CircuitBreaker(name = "userService", fallbackMethod = "deleteFallback")
+    @Bulkhead(name = "userService")
     @Retry(name = "userService")
     @Transactional
     @CacheEvict(value = CACHE_NAME, key = "#id")

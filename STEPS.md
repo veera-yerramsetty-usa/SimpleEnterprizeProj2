@@ -98,3 +98,13 @@ Added **Resilience4j Retry** with fallback methods alongside existing circuit br
 - Decorator ordering: `CircuitBreaker(outer)` → `Retry(inner)` via aspect order properties
 - **Fallback methods** on `@CircuitBreaker`: `findAll` returns `Page.empty(pageable)` for graceful degradation; all other methods throw `ServiceUnavailableException` (503)
 - New `ServiceUnavailableException` with `@ExceptionHandler` in `GlobalExceptionHandler` returning 503
+
+## 17. Bulkhead Pattern (`dev`)
+
+Added **Resilience4j Semaphore Bulkhead** to limit concurrent calls per service, preventing one overloaded service from starving thread resources for others:
+- `@Bulkhead` annotation on all 21 service methods across 3 services
+- **Semaphore type** (default): lightweight counter-based concurrency limiter — no extra thread pool, preserves `@Transactional` thread-local context
+- `userService` and `employeeService`: max 10 concurrent calls; `departmentService`: max 5 (lower traffic)
+- `maxWaitDuration=0ms` — fail-fast when bulkhead is full (no queuing)
+- Updated decorator ordering: `CircuitBreaker(1)` → `Bulkhead(2147483646, hardcoded)` → `Retry(2147483647)` — each retry attempt holds a permit
+- `BulkheadFullException` → 429 Too Many Requests via `GlobalExceptionHandler`
