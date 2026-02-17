@@ -151,3 +151,21 @@ Added **bulk create/update/delete endpoints** for all three resources, reducing 
 - **`findEntityById()` per item** in update/delete — preserves 404 contract (missing ID → rollback)
 - **`@CacheEvict(allEntries=true)`** on UserService bulk methods since `@CachePut` can't handle multiple keys
 - **Async notifications** fired per item (consistent with single-item behavior)
+
+## 22. Webhook Support (`dev`)
+
+Added **webhook support** for real-time event delivery to registered HTTP endpoints after CRUD operations:
+- **`WebhookRegistration`** entity — stores URL, entityType, eventType, HMAC secret, active flag
+- **`WebhookDeliveryLog`** entity — records each delivery attempt (request/response, status, attempt count)
+- **Full CRUD API** at `/api/v1/webhooks` — register, update, patch, delete webhooks; view delivery logs per webhook
+- **`AsyncNotificationService`** enhanced — dispatches HTTP POSTs to matching webhooks with JSON payload (`{entityType, eventType, entityId, timestamp}`)
+- **HMAC-SHA256 signing** — `X-Webhook-Signature` header with per-webhook secret for payload verification
+- **Wildcard matching** — `entityType="*"` and/or `eventType="*"` to subscribe to all entities/events
+- **Delivery logging** — every webhook call (success or failure) saved to `webhook_delivery_logs` for auditing
+- **Scheduled retry** — `WebhookRetryScheduler` retries failed deliveries every 60s (max 3 attempts)
+- **Scheduled cleanup** — `WebhookCleanupScheduler` deletes delivery logs older than 7 days (hourly)
+- **`RestClient`** (Spring 6.1+) — synchronous HTTP client with 5s connect / 10s read timeout, zero new dependencies
+- **Resilience4j** — `@CircuitBreaker`, `@Bulkhead`, `@Retry` on all `WebhookService` methods with fallbacks
+- **Secret is write-only** — never exposed in API responses to prevent leakage
+- **Hard delete** — webhooks are infrastructure entities; CASCADE FK cleans up delivery logs automatically
+- Liquibase migration `005-add-webhook-tables.yaml` creates tables with indexes and FK constraint

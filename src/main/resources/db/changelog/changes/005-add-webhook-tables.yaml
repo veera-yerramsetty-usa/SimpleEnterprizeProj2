@@ -1,0 +1,141 @@
+databaseChangeLog:
+  - changeSet:
+      id: "005"
+      author: "developer"
+      changes:
+        - createTable:
+            tableName: webhook_registrations
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: url
+                  type: VARCHAR(2048)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: entity_type
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: event_type
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: secret
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: active
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP
+                  constraints:
+                    nullable: false
+        - createTable:
+            tableName: webhook_delivery_logs
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: webhook_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: entity_type
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: event_type
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: entity_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: request_url
+                  type: VARCHAR(2048)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: request_body
+                  type: CLOB
+              - column:
+                  name: response_status
+                  type: INT
+              - column:
+                  name: response_body
+                  type: VARCHAR(1024)
+              - column:
+                  name: success
+                  type: BOOLEAN
+                  constraints:
+                    nullable: false
+              - column:
+                  name: attempt_count
+                  type: INT
+                  defaultValueNumeric: 1
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: webhook_delivery_logs
+            baseColumnNames: webhook_id
+            referencedTableName: webhook_registrations
+            referencedColumnNames: id
+            constraintName: fk_delivery_logs_webhook
+            onDelete: CASCADE
+        - createIndex:
+            tableName: webhook_registrations
+            indexName: idx_webhook_reg_entity_event
+            columns:
+              - column:
+                  name: entity_type
+              - column:
+                  name: event_type
+        - createIndex:
+            tableName: webhook_delivery_logs
+            indexName: idx_delivery_logs_webhook_id
+            columns:
+              - column:
+                  name: webhook_id
+        - createIndex:
+            tableName: webhook_delivery_logs
+            indexName: idx_delivery_logs_created_at
+            columns:
+              - column:
+                  name: created_at
+        - createIndex:
+            tableName: webhook_delivery_logs
+            indexName: idx_delivery_logs_success_attempt
+            columns:
+              - column:
+                  name: success
+              - column:
+                  name: attempt_count

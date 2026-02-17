@@ -31,8 +31,9 @@
 21. [Feature 19 — Graceful Shutdown](#21-feature-19--graceful-shutdown)
 22. [Feature 20 — Async Processing](#22-feature-20--async-processing)
 23. [Feature 21 — Bulk Operations](#23-feature-21--bulk-operations)
-24. [Cross-Cutting Concerns Summary](#24-cross-cutting-concerns-summary)
-25. [Full API Endpoint Reference](#25-full-api-endpoint-reference)
+24. [Feature 22 — Webhook Support](#24-feature-22--webhook-support)
+25. [Cross-Cutting Concerns Summary](#25-cross-cutting-concerns-summary)
+26. [Full API Endpoint Reference](#26-full-api-endpoint-reference)
 
 ---
 
@@ -2153,9 +2154,94 @@ public ResponseEntity<List<EntityModel<UserResponse>>> bulkCreate(
 
 ---
 
-## 24. Cross-Cutting Concerns Summary
+## 24. Feature 22 — Webhook Support
 
-### How the 21 features interact
+### What was done
+Added webhook support so external systems can subscribe to entity lifecycle events (CREATED, UPDATED, DELETED) and receive real-time HTTP POST notifications. Includes full CRUD for webhook registrations, HMAC-SHA256 payload signing, delivery logging, scheduled retry of failed deliveries, and scheduled cleanup of old logs.
+
+### Why (Architect perspective)
+- **Event-driven integration**: Webhooks are the standard pattern for notifying external systems of changes without polling. Every major SaaS platform (GitHub, Stripe, Slack) uses webhooks.
+- **Decoupling**: External systems don't need to know about internal service architecture — they just register a URL and receive events.
+- **Auditability**: Delivery logs provide a complete trail of what was sent, when, and whether it succeeded.
+- **Security**: HMAC-SHA256 signatures allow consumers to verify that payloads are authentic and untampered.
+- **Reliability**: Automatic retry of failed deliveries (max 3 attempts) handles transient network failures without manual intervention.
+
+### How (Developer perspective)
+
+**New files created:**
+
+| File | Purpose |
+|---|---|
+| `005-add-webhook-tables.yaml` | Liquibase migration — `webhook_registrations` and `webhook_delivery_logs` tables with indexes and CASCADE FK |
+| `WebhookRegistration.java` | JPA entity — id, url(2048), entityType(50), eventType(50), secret(255), active, createdAt |
+| `WebhookDeliveryLog.java` | JPA entity — id, webhookId(Long), entityType, eventType, entityId, requestUrl, requestBody(@Lob), responseStatus, responseBody(1024), success, attemptCount, createdAt |
+| `WebhookRegistrationRepository.java` | JpaRepository with custom JPQL `findActiveByEntityTypeAndEventType` supporting `"*"` wildcard |
+| `WebhookDeliveryLogRepository.java` | JpaRepository with `findBySuccessFalseAndAttemptCountLessThan`, `deleteByCreatedAtBefore`, `findByWebhookId` |
+| `WebhookRegistrationRequest.java` | Validated DTO — `@NotBlank` url with `@Pattern(^https?://.*)`, entityType, eventType, secret `@Size(min=16)` |
+| `WebhookRegistrationPatchRequest.java` | Patch DTO — all fields nullable, `active` as `Boolean` wrapper |
+| `WebhookRegistrationResponse.java` | Response DTO — secret intentionally omitted (write-only) |
+| `WebhookDeliveryLogResponse.java` | Response DTO — requestBody omitted (may contain sensitive data) |
+| `WebhookRegistrationMapper.java` | `@Component` mapper with `toEntity`, `toResponse`, `updateEntity`, `patchEntity`, `toDeliveryLogResponse` |
+| `WebhookSignatureUtils.java` | Static utility — `computeSignature(payload, secret)` → `"sha256=<hex>"` using HmacSHA256 + HexFormat |
+| `RestClientConfig.java` | `@Configuration` — `RestClient` bean with 5s connect / 10s read timeout via `SimpleClientHttpRequestFactory` |
+| `WebhookService.java` | CRUD service with `@CircuitBreaker`/`@Bulkhead`/`@Retry` + fallback methods |
+| `WebhookRetryScheduler.java` | `@Scheduled(fixedRate=60000)` — retries failed deliveries with attemptCount < 3 |
+| `WebhookCleanupScheduler.java` | `@Scheduled(fixedRate=3600000)` — deletes delivery logs older than 7 days |
+| `WebhookController.java` | `@RestController` at `/api/v1/webhooks` — full CRUD + `GET /{id}/deliveries` with HATEOAS and OpenAPI |
+
+**Modified `AsyncNotificationService`** — added constructor injection for `WebhookRegistrationRepository`, `WebhookDeliveryLogRepository`, `RestClient`, and `ObjectMapper`. Each `@Async` notify method now calls `dispatchWebhooks()` which queries matching webhooks, builds a JSON payload, and delivers via HTTP POST with signature headers. No changes to callers (UserService, EmployeeService, DepartmentService).
+
+**Webhook payload format:**
+```json
+{
+  "entityType": "User",
+  "eventType": "CREATED",
+  "entityId": 42,
+  "timestamp": "2026-02-16T10:30:00.000"
+}
+```
+
+**HTTP headers sent with each webhook POST:**
+- `Content-Type: application/json`
+- `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of payload with per-webhook secret)
+- `X-Webhook-Event: CREATED`
+- `X-Webhook-Entity-Type: User`
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Modify `AsyncNotificationService` (not a new service) | Create a separate `WebhookDispatchService` | The existing `@Async` methods already run on the right thread pool with MDC propagation. Adding dispatch logic here avoids a new service and keeps the same fire-and-forget contract. Callers don't change |
+| `RestClient` over `WebClient` | `WebClient` (reactive) | Project has only `spring-boot-starter-web` (no WebFlux). `RestClient` is Spring 6.1+ built-in, synchronous, fluent, and already on the classpath. Zero new dependencies |
+| `webhookId` as plain `Long` (not `@ManyToOne`) | Full JPA relationship | Keeps `WebhookDeliveryLog` lightweight, avoids lazy-loading in async/retry paths. FK constraint in DB ensures referential integrity. CASCADE delete cleans up logs when a webhook is removed |
+| Wildcard `"*"` matching in JPQL | Java-side filtering or enum conversion | Simple `OR` conditions in JPQL — no enum conversion needed. `entityType="*"` means "all entities", `eventType="*"` means "all events" |
+| Hard delete for webhooks | Soft delete like domain entities | These are infrastructure entities, not domain data. No soft-delete needed. CASCADE FK cleans up delivery logs automatically |
+| Secret is write-only | Include secret in responses | Never exposed in `WebhookRegistrationResponse` to prevent leakage via API responses or logs |
+| Response body truncated to 1024 chars | Store full response | Prevents unbounded storage from large webhook consumer responses |
+| Scheduled retry (max 3 attempts, 60s interval) | Exponential backoff or message queue | Simple and predictable. For most transient failures, 3 attempts within 3 minutes is sufficient. A message queue (RabbitMQ, Kafka) would be more robust but adds infrastructure complexity |
+
+### Interview talking points
+
+**Q: Why not use a message queue (RabbitMQ/Kafka) instead of direct HTTP delivery?**
+> Direct HTTP delivery with retry is simpler and sufficient for moderate webhook volumes. It avoids infrastructure dependencies (broker setup, dead-letter queues, consumer groups). For high-volume scenarios with guaranteed delivery, you'd migrate to an event bus, but the webhook registration/delivery-log pattern remains the same — only the transport changes.
+
+**Q: How do consumers verify webhook authenticity?**
+> Each webhook registration includes a secret (minimum 16 characters). Every delivery includes an `X-Webhook-Signature` header with `sha256=<hex>` — the HMAC-SHA256 of the JSON payload using the shared secret. Consumers compute the same HMAC on the received body and compare signatures. This prevents tampering and spoofing.
+
+**Q: Why is the secret write-only?**
+> The secret is never included in API responses (`WebhookRegistrationResponse` omits it). This follows the principle of least privilege — once set, the secret is only used internally for signing. If exposed in GET responses, it could be leaked via logs, browser history, or network sniffing. If a consumer forgets the secret, they can PATCH/PUT a new one.
+
+**Q: What happens if a webhook endpoint is down?**
+> The first delivery attempt fails and is logged with `success=false`. The `WebhookRetryScheduler` picks it up within 60 seconds and retries (up to 3 total attempts). If all attempts fail, the delivery log persists for debugging. The webhook registration remains active — future events will still be attempted.
+
+**Q: Why modify `AsyncNotificationService` instead of creating a new service?**
+> The existing `@Async` methods already run on the MDC-propagating thread pool, preserving correlation IDs for logging. Creating a separate service would require either calling it from AsyncNotificationService (same result) or injecting it into all three domain services (violates the plan's "no changes to callers" constraint). Keeping dispatch logic in the notification service maintains the single-responsibility of "notify about resource changes."
+
+---
+
+## 25. Cross-Cutting Concerns Summary
+
+### How the 22 features interact
 
 ```
 Request Flow:
@@ -2177,10 +2263,11 @@ Request Flow:
 16. If cache miss → SQL executes against H2 (schema managed by Liquibase)
 17. Mapper converts Entity → Response DTO (with sanitization on writes)
 18. AsyncNotificationService fires @Async notification (write operations only, runs on async- pool)
-19. HATEOAS links added by controller
-20. Response returned (IdempotencyFilter stores response for POST with key)
-21. RequestLoggingFilter logs method, URI, status, duration
-22. GlobalExceptionHandler catches any exceptions → consistent JSON error
+19. Webhook dispatch — queries matching registrations, POSTs payload with HMAC signature, logs delivery
+20. HATEOAS links added by controller
+21. Response returned (IdempotencyFilter stores response for POST with key)
+22. RequestLoggingFilter logs method, URI, status, duration
+23. GlobalExceptionHandler catches any exceptions → consistent JSON error
 ```
 
 ### Cache layers (from fastest to slowest)
@@ -2218,7 +2305,7 @@ Request Flow:
 
 ---
 
-## 25. Full API Endpoint Reference
+## 26. Full API Endpoint Reference
 
 ### User Endpoints
 
@@ -2267,6 +2354,20 @@ Request Flow:
 | DELETE | `/api/v1/departments/bulk` | `List<Long>` | — | 204, 400, 404, 500 |
 
 **Query parameters for GET list**: `name`, `page`, `size`, `sort`
+
+### Webhook Endpoints
+
+| Method | Path | Body | Response | Status Codes |
+|---|---|---|---|---|
+| GET | `/api/v1/webhooks` | — | `PagedModel<EntityModel<WebhookRegistrationResponse>>` | 200, 400, 500 |
+| GET | `/api/v1/webhooks/{id}` | — | `EntityModel<WebhookRegistrationResponse>` | 200, 404, 500 |
+| POST | `/api/v1/webhooks` | `WebhookRegistrationRequest` | `EntityModel<WebhookRegistrationResponse>` | 201, 400, 500 |
+| PUT | `/api/v1/webhooks/{id}` | `WebhookRegistrationRequest` | `EntityModel<WebhookRegistrationResponse>` | 200, 400, 404, 500 |
+| PATCH | `/api/v1/webhooks/{id}` | `WebhookRegistrationPatchRequest` | `EntityModel<WebhookRegistrationResponse>` | 200, 400, 404, 500 |
+| DELETE | `/api/v1/webhooks/{id}` | — | — | 204, 404, 500 |
+| GET | `/api/v1/webhooks/{id}/deliveries` | — | `PagedModel<EntityModel<WebhookDeliveryLogResponse>>` | 200, 404, 500 |
+
+**Query parameters for GET list**: `page`, `size`, `sort`
 
 ### Utility Endpoints
 
