@@ -1,7 +1,7 @@
 package org.sample.simpleenterprizeproj2.config;
 
 import java.io.IOException;
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.Optional;
 
 import org.sample.simpleenterprizeproj2.model.IdempotencyRecord;
@@ -69,7 +69,7 @@ public class IdempotencyFilter implements Filter {
         }
 
         IdempotencyRecord record = new IdempotencyRecord(
-                idempotencyKey, httpRequest.getRequestURI(), LocalDateTime.now());
+                idempotencyKey, httpRequest.getRequestURI(), Instant.now());
         try {
             idempotencyRepository.save(record);
         } catch (DataIntegrityViolationException e) {
@@ -122,7 +122,7 @@ public class IdempotencyFilter implements Filter {
                 "A request with this idempotency key is already being processed",
                 LocaleContextHolder.getLocale());
 
-        String json = "{\"timestamp\":\"" + LocalDateTime.now() + "\","
+        String json = "{\"timestamp\":\"" + Instant.now() + "\","
                 + "\"status\":409,"
                 + "\"error\":\"Conflict\","
                 + "\"message\":\"" + message + "\"}";

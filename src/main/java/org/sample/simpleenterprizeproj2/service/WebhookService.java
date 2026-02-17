@@ -20,7 +20,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 @Service
 @Transactional(readOnly = true)
@@ -69,7 +69,7 @@ public class WebhookService {
     @Transactional
     public WebhookRegistrationResponse create(WebhookRegistrationRequest request) {
         WebhookRegistration entity = webhookMapper.toEntity(request);
-        entity.setCreatedAt(LocalDateTime.now());
+        entity.setCreatedAt(Instant.now());
         WebhookRegistrationResponse response = webhookMapper.toResponse(
                 webhookRegistrationRepository.save(entity));
         log.info("Created webhook id={}", response.getId());

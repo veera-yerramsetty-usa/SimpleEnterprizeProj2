@@ -1,0 +1,18 @@
+databaseChangeLog:
+  - changeSet:
+      id: 006-convert-timestamps-to-utc
+      author: developer
+      comment: "Convert TIMESTAMP columns to TIMESTAMP WITH TIME ZONE for UTC-standardized timestamps"
+      changes:
+        - modifyDataType:
+            tableName: idempotency_keys
+            columnName: created_at
+            newDataType: TIMESTAMP WITH TIME ZONE
+        - modifyDataType:
+            tableName: webhook_registrations
+            columnName: created_at
+            newDataType: TIMESTAMP WITH TIME ZONE
+        - modifyDataType:
+            tableName: webhook_delivery_logs
+            columnName: created_at
+            newDataType: TIMESTAMP WITH TIME ZONE

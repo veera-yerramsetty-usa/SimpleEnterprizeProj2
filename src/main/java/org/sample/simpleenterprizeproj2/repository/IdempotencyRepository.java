@@ -1,6 +1,6 @@
 package org.sample.simpleenterprizeproj2.repository;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.Optional;
 
 import org.sample.simpleenterprizeproj2.model.IdempotencyRecord;
@@ -10,5 +10,5 @@ public interface IdempotencyRepository extends JpaRepository<IdempotencyRecord, 
 
     Optional<IdempotencyRecord> findByIdempotencyKey(String idempotencyKey);
 
-    void deleteByCreatedAtBefore(LocalDateTime cutoff);
+    void deleteByCreatedAtBefore(Instant cutoff);
 }

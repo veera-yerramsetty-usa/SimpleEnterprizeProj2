@@ -1,6 +1,6 @@
 package org.sample.simpleenterprizeproj2.dto;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 public class WebhookDeliveryLogResponse {
 
@@ -14,14 +14,14 @@ public class WebhookDeliveryLogResponse {
     private String responseBody;
     private boolean success;
     private int attemptCount;
-    private LocalDateTime createdAt;
+    private Instant createdAt;
 
     public WebhookDeliveryLogResponse() {}
 
     public WebhookDeliveryLogResponse(Long id, Long webhookId, String entityType, String eventType,
                                       Long entityId, String requestUrl, Integer responseStatus,
                                       String responseBody, boolean success, int attemptCount,
-                                      LocalDateTime createdAt) {
+                                      Instant createdAt) {
         this.id = id;
         this.webhookId = webhookId;
         this.entityType = entityType;
@@ -65,6 +65,6 @@ public class WebhookDeliveryLogResponse {
     public int getAttemptCount() { return attemptCount; }
     public void setAttemptCount(int attemptCount) { this.attemptCount = attemptCount; }
 
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
 }

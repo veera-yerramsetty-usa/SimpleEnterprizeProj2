@@ -1,6 +1,6 @@
 package org.sample.simpleenterprizeproj2.repository;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.List;
 
 import org.sample.simpleenterprizeproj2.model.WebhookDeliveryLog;
@@ -12,7 +12,7 @@ public interface WebhookDeliveryLogRepository extends JpaRepository<WebhookDeliv
 
     List<WebhookDeliveryLog> findBySuccessFalseAndAttemptCountLessThan(int maxAttempts);
 
-    void deleteByCreatedAtBefore(LocalDateTime cutoff);
+    void deleteByCreatedAtBefore(Instant cutoff);
 
     Page<WebhookDeliveryLog> findByWebhookId(Long webhookId, Pageable pageable);
 }

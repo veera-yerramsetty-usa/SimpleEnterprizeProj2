@@ -1,6 +1,6 @@
 package org.sample.simpleenterprizeproj2.service;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.List;
 
 import org.sample.simpleenterprizeproj2.model.WebhookDeliveryLog;
@@ -69,7 +69,7 @@ public class AsyncNotificationService {
         return "{\"entityType\":\"" + entityType
                 + "\",\"eventType\":\"" + eventType
                 + "\",\"entityId\":" + entityId
-                + ",\"timestamp\":\"" + LocalDateTime.now() + "\"}";
+                + ",\"timestamp\":\"" + Instant.now() + "\"}";
     }
 
     private void deliverWebhook(WebhookRegistration webhook, String entityType,
@@ -81,7 +81,7 @@ public class AsyncNotificationService {
         deliveryLog.setEntityId(entityId);
         deliveryLog.setRequestUrl(webhook.getUrl());
         deliveryLog.setRequestBody(payload);
-        deliveryLog.setCreatedAt(LocalDateTime.now());
+        deliveryLog.setCreatedAt(Instant.now());
         deliveryLog.setAttemptCount(1);
 
         try {

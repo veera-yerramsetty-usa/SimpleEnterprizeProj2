@@ -181,3 +181,13 @@ Added **internationalization (i18n)** so the API returns localized error message
 - **`GlobalExceptionHandler`** — injected `MessageSource`; all 10 handler methods resolve messages via `messageSource.getMessage()` + `LocaleContextHolder.getLocale()`
 - **`IdempotencyFilter`** — conflict response message resolved via `MessageSource`
 - **Log messages stay in English** — internal logs are for developers/ops, only API response bodies are internationalized
+
+## 24. Timezone Handling (`dev`)
+
+Standardized all timestamps on **UTC** using `java.time.Instant` instead of `LocalDateTime`, eliminating timezone ambiguity in a distributed system:
+- **`Instant` replaces `LocalDateTime`** in all 3 entities (`WebhookRegistration`, `WebhookDeliveryLog`, `IdempotencyRecord`), 2 response DTOs, 2 repository method signatures, and all service/filter/scheduler code that creates timestamps
+- **`TimeZone.setDefault(UTC)`** in `main()` — defense-in-depth safety net before Spring context initialization
+- **Jackson configured** — `spring.jackson.datatype.datetime.write-dates-as-timestamps=false` serializes `Instant` as ISO 8601 strings with `Z` suffix (e.g., `"2024-02-16T15:30:45.123Z"`) instead of epoch numbers; `time-zone=UTC` ensures consistent formatting
+- **Liquibase migration `006-convert-timestamps-to-utc.yaml`** — converts all 3 `created_at` columns from `TIMESTAMP` to `TIMESTAMP WITH TIME ZONE`
+- **Cleanup schedulers** — use `Instant.now().minus(Duration.ofHours(24))` and `Instant.now().minus(Duration.ofDays(7))` instead of `LocalDateTime.now().minusHours/minusDays`
+- **Zero new dependencies** — `Instant`, `Duration`, and Jackson's `JavaTimeModule` are already available

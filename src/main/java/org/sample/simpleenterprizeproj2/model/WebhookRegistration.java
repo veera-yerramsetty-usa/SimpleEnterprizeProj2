@@ -1,6 +1,6 @@
 package org.sample.simpleenterprizeproj2.model;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -33,7 +33,7 @@ public class WebhookRegistration {
     private boolean active = true;
 
     @Column(name = "created_at", nullable = false)
-    private LocalDateTime createdAt;
+    private Instant createdAt;
 
     public WebhookRegistration() {}
 
@@ -55,6 +55,6 @@ public class WebhookRegistration {
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
 
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
 }

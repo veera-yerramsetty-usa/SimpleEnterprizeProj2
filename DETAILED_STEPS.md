@@ -33,8 +33,9 @@
 23. [Feature 21 — Bulk Operations](#23-feature-21--bulk-operations)
 24. [Feature 22 — Webhook Support](#24-feature-22--webhook-support)
 25. [Feature 23 — Multi-language Support (i18n)](#25-feature-23--multi-language-support-i18n)
-26. [Cross-Cutting Concerns Summary](#26-cross-cutting-concerns-summary)
-27. [Full API Endpoint Reference](#27-full-api-endpoint-reference)
+26. [Feature 24 — Timezone Handling (UTC Standardization)](#26-feature-24--timezone-handling-utc-standardization)
+27. [Cross-Cutting Concerns Summary](#27-cross-cutting-concerns-summary)
+28. [Full API Endpoint Reference](#28-full-api-endpoint-reference)
 
 ---
 
@@ -2352,9 +2353,115 @@ validation.user.username.required=El nombre de usuario es obligatorio
 
 ---
 
-## 26. Cross-Cutting Concerns Summary
+## 26. Feature 24 — Timezone Handling (UTC Standardization)
 
-### How the 23 features interact
+### What it does
+
+Replaces all `LocalDateTime` usage with `java.time.Instant` to standardize every timestamp in the system on UTC. API responses now include the `Z` suffix (e.g., `"2024-02-16T15:30:45.123Z"`), database columns store timezone-aware values, and the JVM default timezone is set to UTC as a safety net.
+
+### Why it matters
+
+`LocalDateTime` is timezone-naive — it represents a date and time without any offset or zone. In a distributed system where servers may run in different time zones, this causes:
+- **Ambiguous timestamps** — `2024-02-16T15:30:45` could mean different instants depending on the server's locale
+- **Incomparable values** — cleanup schedulers and retention policies produce wrong results if JVM timezones differ
+- **API confusion** — clients have no way to know what timezone a response timestamp refers to
+
+`Instant` is always UTC by definition. It represents an unambiguous point on the timeline with nanosecond precision. Combined with `TIMESTAMP WITH TIME ZONE` in the database and ISO 8601 serialization in JSON, this eliminates all timezone ambiguity.
+
+### How it works
+
+**Java type change — `LocalDateTime` → `Instant`:**
+- 3 entities: `WebhookRegistration.createdAt`, `WebhookDeliveryLog.createdAt`, `IdempotencyRecord.createdAt`
+- 2 response DTOs: `WebhookRegistrationResponse.createdAt`, `WebhookDeliveryLogResponse.createdAt`
+- 2 repositories: `deleteByCreatedAtBefore(Instant cutoff)` parameter type
+- All call sites: `Instant.now()` replaces `LocalDateTime.now()` in services, filters, schedulers, exception handler
+
+**JVM default timezone:**
+```java
+public static void main(String[] args) {
+    TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+    SpringApplication.run(SimpleEnterprizeProj2Application.class, args);
+}
+```
+Runs before Spring context initialization. Ensures any accidental `LocalDateTime.now()` or JDBC driver behavior defaults to UTC.
+
+**Jackson configuration:**
+```properties
+spring.jackson.datatype.datetime.write-dates-as-timestamps=false
+spring.jackson.time-zone=UTC
+```
+In Jackson 3.x (Spring Boot 4.x), `WRITE_DATES_AS_TIMESTAMPS` moved from `SerializationFeature` to `DateTimeFeature`, so the property lives under `spring.jackson.datatype.datetime.*`. Without this setting, Jackson serializes `Instant` as a raw epoch number (e.g., `1708100000.123`). With it, Jackson produces human-readable ISO 8601 strings: `"2024-02-16T15:30:45.123Z"`.
+
+**Database migration (Liquibase `006-convert-timestamps-to-utc.yaml`):**
+```yaml
+- modifyDataType:
+    tableName: idempotency_keys
+    columnName: created_at
+    newDataType: TIMESTAMP WITH TIME ZONE
+```
+Applied to all 3 tables. `TIMESTAMP WITH TIME ZONE` stores the UTC offset alongside the value, preventing data loss if the JVM timezone changes.
+
+**Cleanup schedulers:**
+```java
+// Before: LocalDateTime.now().minusHours(24)
+Instant cutoff = Instant.now().minus(Duration.ofHours(24));
+```
+`Instant` doesn't have `minusHours()` directly — instead, `Duration` is used for time-based arithmetic.
+
+### Key files changed
+
+| File | Change |
+|---|---|
+| `SimpleEnterprizeProj2Application.java` | `TimeZone.setDefault(UTC)` in `main()` |
+| `application.properties` | `write-dates-as-timestamps=false`, `time-zone=UTC` |
+| `WebhookRegistration.java` | `LocalDateTime` → `Instant` |
+| `WebhookDeliveryLog.java` | `LocalDateTime` → `Instant` |
+| `IdempotencyRecord.java` | `LocalDateTime` → `Instant` (field + constructor) |
+| `WebhookRegistrationResponse.java` | `LocalDateTime` → `Instant` |
+| `WebhookDeliveryLogResponse.java` | `LocalDateTime` → `Instant` |
+| `IdempotencyRepository.java` | `deleteByCreatedAtBefore(Instant)` |
+| `WebhookDeliveryLogRepository.java` | `deleteByCreatedAtBefore(Instant)` |
+| `GlobalExceptionHandler.java` | `Instant.now().toString()` |
+| `IdempotencyFilter.java` | `Instant.now()` in record creation + conflict response |
+| `AsyncNotificationService.java` | `Instant.now()` in payload + delivery log |
+| `WebhookService.java` | `Instant.now()` in `create()` |
+| `IdempotencyCleanupScheduler.java` | `Instant.now().minus(Duration.ofHours(24))` |
+| `WebhookCleanupScheduler.java` | `Instant.now().minus(Duration.ofDays(7))` |
+| `006-convert-timestamps-to-utc.yaml` | `TIMESTAMP` → `TIMESTAMP WITH TIME ZONE` |
+
+### Design decisions & trade-offs
+
+| Decision | Rationale |
+|---|---|
+| `Instant` over `OffsetDateTime` | `Instant` is always UTC — no ambiguity, no offset to manage. `OffsetDateTime` carries an offset that adds complexity without benefit when standardizing on UTC. |
+| `Instant` over `LocalDateTime` + UTC convention | `LocalDateTime` is semantically "no timezone". Relying on convention is fragile. `Instant` makes UTC a compile-time guarantee. |
+| `TimeZone.setDefault(UTC)` in `main()` | Defense-in-depth. Catches any accidental `LocalDateTime.now()` or JDBC driver timezone behavior. |
+| `TIMESTAMP WITH TIME ZONE` in DB | Stores the UTC offset with the value. H2 supports this natively. Prevents data loss if the JVM timezone changes. |
+| `write-dates-as-timestamps=false` | Without this, Jackson serializes `Instant` as epoch numbers (unreadable). ISO 8601 strings are human-readable and include the `Z` suffix. |
+| Zero new dependencies | `Instant`, `Duration`, and `JavaTimeModule` are already in the classpath (Java stdlib + jackson-datatype-jsr310 via Spring Boot). |
+
+### Interview Q&A
+
+**Q: Why `Instant` instead of `OffsetDateTime` or `ZonedDateTime`?**
+> `Instant` represents a point on the UTC timeline — it has no offset or zone to manage. `OffsetDateTime` carries an offset (e.g., `+00:00`) that adds serialization complexity without benefit when you've standardized on UTC. `ZonedDateTime` carries a full zone ID (e.g., `America/New_York`) which is useful for user-facing display but inappropriate for storage. For backend timestamps, `Instant` is the simplest correct choice.
+
+**Q: What does `TimeZone.setDefault(UTC)` actually do?**
+> It sets the JVM's default timezone, which affects `Calendar.getInstance()`, `new Date()`, `SimpleDateFormat`, JDBC `Timestamp` conversions, and any code that calls `ZoneId.systemDefault()`. By setting it to UTC before Spring initialization, we ensure all framework and library code that depends on the default timezone operates in UTC. It's a safety net — our code uses `Instant` explicitly, but third-party libraries or accidental `LocalDateTime.now()` calls will also produce UTC values.
+
+**Q: What happens to existing data when you migrate from `TIMESTAMP` to `TIMESTAMP WITH TIME ZONE`?**
+> H2 treats `TIMESTAMP` values as UTC by default. When converting to `TIMESTAMP WITH TIME ZONE`, existing values are interpreted in the session timezone (which we've set to UTC via `TimeZone.setDefault`). So existing data is preserved correctly. In production with PostgreSQL, `TIMESTAMP WITHOUT TIME ZONE` values are also interpreted in the session timezone during conversion, so the same `TimeZone.setDefault(UTC)` ensures correctness.
+
+**Q: Why not use `@CreatedDate` from Spring Data Auditing instead of manual `Instant.now()`?**
+> Spring Data Auditing (`@CreatedDate`, `@EnableJpaAuditing`) is a valid approach for entities managed through Spring Data repositories. However, the `IdempotencyRecord` is created in a servlet filter context, and webhook delivery logs are created in async service code. Using `Instant.now()` explicitly is simpler and consistent across all creation paths. Introducing auditing would add framework coupling for a straightforward timestamp assignment.
+
+**Q: How does `Instant` interact with Hibernate and JPA?**
+> Hibernate 6+ (used by Spring Boot 3+) natively maps `java.time.Instant` to SQL `TIMESTAMP WITH TIME ZONE`. No `@Temporal` annotation needed (that's for legacy `java.util.Date`). Hibernate stores and retrieves `Instant` values in UTC, and the JDBC driver handles the conversion between Java's `Instant` and the database's timestamp type.
+
+---
+
+## 27. Cross-Cutting Concerns Summary
+
+### How the 24 features interact
 
 ```
 Request Flow:
@@ -2418,7 +2525,7 @@ Request Flow:
 
 ---
 
-## 27. Full API Endpoint Reference
+## 28. Full API Endpoint Reference
 
 ### User Endpoints
 

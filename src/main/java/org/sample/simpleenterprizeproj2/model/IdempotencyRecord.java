@@ -1,6 +1,6 @@
 package org.sample.simpleenterprizeproj2.model;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -35,11 +35,11 @@ public class IdempotencyRecord {
     private String contentType;
 
     @Column(name = "created_at", nullable = false)
-    private LocalDateTime createdAt;
+    private Instant createdAt;
 
     public IdempotencyRecord() {}
 
-    public IdempotencyRecord(String idempotencyKey, String requestPath, LocalDateTime createdAt) {
+    public IdempotencyRecord(String idempotencyKey, String requestPath, Instant createdAt) {
         this.idempotencyKey = idempotencyKey;
         this.requestPath = requestPath;
         this.createdAt = createdAt;
@@ -63,6 +63,6 @@ public class IdempotencyRecord {
     public String getContentType() { return contentType; }
     public void setContentType(String contentType) { this.contentType = contentType; }
 
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
 }

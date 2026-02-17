@@ -1,6 +1,7 @@
 package org.sample.simpleenterprizeproj2.config;
 
-import java.time.LocalDateTime;
+import java.time.Duration;
+import java.time.Instant;
 
 import org.sample.simpleenterprizeproj2.repository.IdempotencyRepository;
 import org.slf4j.Logger;
@@ -23,7 +24,7 @@ public class IdempotencyCleanupScheduler {
     @Scheduled(fixedRate = 3600000)
     @Transactional
     public void cleanupExpiredKeys() {
-        LocalDateTime cutoff = LocalDateTime.now().minusHours(24);
+        Instant cutoff = Instant.now().minus(Duration.ofHours(24));
         idempotencyRepository.deleteByCreatedAtBefore(cutoff);
         log.info("Cleaned up idempotency keys older than {}", cutoff);
     }

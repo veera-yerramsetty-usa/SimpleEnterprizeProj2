@@ -1,6 +1,6 @@
 package org.sample.simpleenterprizeproj2.dto;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 public class WebhookRegistrationResponse {
 
@@ -9,12 +9,12 @@ public class WebhookRegistrationResponse {
     private String entityType;
     private String eventType;
     private boolean active;
-    private LocalDateTime createdAt;
+    private Instant createdAt;
 
     public WebhookRegistrationResponse() {}
 
     public WebhookRegistrationResponse(Long id, String url, String entityType, String eventType,
-                                       boolean active, LocalDateTime createdAt) {
+                                       boolean active, Instant createdAt) {
         this.id = id;
         this.url = url;
         this.entityType = entityType;
@@ -38,6 +38,6 @@ public class WebhookRegistrationResponse {
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
 
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
 }
