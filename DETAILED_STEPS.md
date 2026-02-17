@@ -28,8 +28,9 @@
 18. [Feature 16 — Resilience4j Retry & Fallback](#18-feature-16--resilience4j-retry--fallback)
 19. [Feature 17 — Resilience4j Bulkhead (Concurrency Limiter)](#19-feature-17--resilience4j-bulkhead-concurrency-limiter)
 20. [Feature 18 — POST Idempotency](#20-feature-18--post-idempotency)
-21. [Cross-Cutting Concerns Summary](#21-cross-cutting-concerns-summary)
-22. [Full API Endpoint Reference](#22-full-api-endpoint-reference)
+21. [Feature 19 — Graceful Shutdown](#21-feature-19--graceful-shutdown)
+22. [Cross-Cutting Concerns Summary](#22-cross-cutting-concerns-summary)
+23. [Full API Endpoint Reference](#23-full-api-endpoint-reference)
 
 ---
 
@@ -1828,9 +1829,105 @@ POST with Idempotency-Key header:
 
 ---
 
-## 21. Cross-Cutting Concerns Summary
+## 21. Feature 19 — Graceful Shutdown
 
-### How the 18 features interact
+### What was done
+Configured graceful shutdown via properties only — no new Java files. On SIGTERM, the embedded Tomcat server stops accepting new connections while in-flight requests complete, the `TaskScheduler` waits for running `@Scheduled` tasks to finish, and Spring context destruction closes all resources (HikariCP, EhCache, Redis, Resilience4j) in reverse initialization order.
+
+### Why (Architect perspective)
+- **Zero dropped requests**: Without graceful shutdown, SIGTERM kills the JVM immediately — in-flight HTTP requests are dropped mid-response, active transactions may be interrupted, and the `@Scheduled` cleanup task could be killed during a database operation. Graceful shutdown ensures all in-progress work completes before exit.
+- **Deployment safety**: Container orchestrators (Kubernetes, ECS) send SIGTERM before SIGKILL. The 30-second timeout gives the application enough time to drain requests while staying within the typical 30-60 second termination grace period.
+- **Data integrity**: Active `@Transactional` methods complete before HikariCP closes the connection pool, preventing partial writes or corrupted state. The idempotency cleanup scheduler finishes its current `DELETE` batch before the `TaskScheduler` shuts down.
+- **Properties-only approach**: Spring Boot's `WebServerGracefulShutdownLifecycle` and `TaskSchedulingAutoConfiguration` handle everything. No custom `@PreDestroy`, `DisposableBean`, or shutdown hooks needed — all infrastructure components implement lifecycle interfaces that Spring auto-manages.
+
+### How (Developer perspective)
+
+**`application.properties`** (shared across all profiles):
+```properties
+# Graceful shutdown
+server.shutdown=graceful
+spring.lifecycle.timeout-per-shutdown-phase=30s
+```
+
+**`application-dev.properties`** and **`application-prod.properties`**:
+```properties
+# Task scheduling shutdown
+spring.task.scheduling.shutdown.await-termination=true
+spring.task.scheduling.shutdown.await-termination-period=30s
+```
+
+**What each property does:**
+
+| Property | Effect |
+|---|---|
+| `server.shutdown=graceful` | Tomcat stops accepting new connections; in-flight requests complete (new requests get HTTP 503) |
+| `spring.lifecycle.timeout-per-shutdown-phase=30s` | Maximum time to wait for in-flight requests before forcing shutdown |
+| `spring.task.scheduling.shutdown.await-termination=true` | `TaskScheduler` waits for currently running `@Scheduled` tasks to finish instead of interrupting them |
+| `spring.task.scheduling.shutdown.await-termination-period=30s` | Maximum time to wait for scheduled tasks to complete |
+
+**Shutdown sequence on SIGTERM:**
+```
+1. JVM receives SIGTERM
+2. Spring Boot shutdown hook fires
+3. Tomcat stops accepting new connections (HTTP 503 for new requests)
+4. In-flight HTTP requests complete (up to 30s timeout)
+5. TaskScheduler awaits running @Scheduled tasks (up to 30s)
+6. Spring context destruction begins (reverse initialization order):
+   a. Resilience4j decorators release
+   b. Redis LettuceConnectionFactory closes (implements DisposableBean)
+   c. EhCache CacheManager closes (implements Closeable)
+   d. Hibernate SessionFactory closes
+   e. HikariCP pool closes (waits for active connections to return)
+   f. Liquibase cleanup
+7. JVM exits
+```
+
+**Why no custom Java code is needed:**
+
+| Component | Lifecycle interface | Shutdown behavior |
+|---|---|---|
+| Embedded Tomcat | `WebServerGracefulShutdownLifecycle` | Stops accepting connections, drains in-flight requests |
+| HikariCP | `Closeable` | `close()` waits for active connections to return to pool |
+| EhCache `CacheManager` | `Closeable` | JCache provider flushes and closes cache regions |
+| Redis `LettuceConnectionFactory` | `DisposableBean` | `destroy()` closes connections |
+| `@Scheduled` executor | `TaskSchedulingAutoConfiguration` | Respects `await-termination` properties |
+| Resilience4j | Spring bean lifecycle | Circuit breakers, bulkheads, retries release resources |
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| 30s timeout | 5s (fast) or 60s (generous) | 30s matches Kubernetes default `terminationGracePeriodSeconds`. Long enough for most requests; short enough that deploys aren't slow |
+| Properties-only (no Java) | Custom `@PreDestroy` methods, `SmartLifecycle` beans | Spring Boot handles all component lifecycles natively. Custom code adds maintenance burden and can interfere with Spring's shutdown ordering |
+| `server.shutdown=graceful` | Default `immediate` | Immediate shutdown drops in-flight requests. Acceptable in dev but unacceptable in production where users experience 502/504 errors during deployments |
+| `await-termination` in profile files | In shared `application.properties` | Task scheduling shutdown is relevant in all profiles, but keeping it in profile files follows the existing pattern where profile-specific configs are separated |
+| Same 30s for both phases | Different timeouts | Simplicity. The HTTP drain and task completion happen in parallel during the same shutdown window. Different timeouts add configuration complexity with minimal benefit |
+
+### Interview talking points
+
+**Q: What happens to new requests during graceful shutdown?**
+> Tomcat stops accepting new TCP connections immediately. Requests that arrive during the drain period receive HTTP 503 Service Unavailable. Load balancers should detect this and route traffic to healthy instances. In Kubernetes, the pod is removed from the Service endpoints before SIGTERM is sent (readiness probe fails), so traffic stops arriving before shutdown begins.
+
+**Q: What if an in-flight request takes longer than 30 seconds?**
+> After the timeout expires, Spring forcefully terminates remaining requests. The response is dropped (client sees a connection reset). To handle this: (1) ensure API operations complete within a reasonable time, (2) long-running operations should use async processing (return 202 Accepted, process in background), (3) increase the timeout if justified, but keep it under the orchestrator's `terminationGracePeriodSeconds`.
+
+**Q: How does `@Transactional` interact with shutdown?**
+> An in-flight request's `@Transactional` method completes normally during the drain period — the transaction commits as usual. If the timeout expires mid-transaction, the thread is interrupted, the transaction rolls back (Hibernate/JDBC detects the interrupt), and no partial writes occur. This is safe because transactions are atomic.
+
+**Q: Why not add a custom `@PreDestroy` method for cleanup?**
+> All infrastructure components (HikariCP, EhCache, Redis, Hibernate) already implement Spring lifecycle interfaces (`Closeable`, `DisposableBean`, `SmartLifecycle`). Spring destroys them in reverse initialization order during context shutdown. Adding custom `@PreDestroy` methods risks executing cleanup out of order or duplicating work that Spring already handles.
+
+**Q: How would you verify graceful shutdown is working?**
+> (1) Start the app, send a long-running request (e.g., with a `Thread.sleep` in the service), send SIGTERM, and verify the response completes. (2) Check logs for "Commencing graceful shutdown" and "Graceful shutdown complete" messages from Spring Boot. (3) In integration tests, use `SpringApplication.exit()` and assert that pending requests complete. (4) Monitor with `curl` during a rolling deployment.
+
+**Q: What about WebSocket or SSE connections?**
+> Graceful shutdown drains HTTP request-response connections. Long-lived connections (WebSocket, SSE) are also subject to the timeout. For WebSocket, you'd send a close frame before shutdown. For SSE, clients should handle connection drops and reconnect. This project uses only request-response HTTP, so no special handling is needed.
+
+---
+
+## 22. Cross-Cutting Concerns Summary
+
+### How the 19 features interact
 
 ```
 Request Flow:
@@ -1891,7 +1988,7 @@ Request Flow:
 
 ---
 
-## 22. Full API Endpoint Reference
+## 23. Full API Endpoint Reference
 
 ### User Endpoints
 
@@ -1983,4 +2080,4 @@ public class DatabaseConfig {
 
 ---
 
-*This document covers all 18 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*
+*This document covers all 19 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*

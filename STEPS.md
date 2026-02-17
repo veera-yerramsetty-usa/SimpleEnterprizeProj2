@@ -120,3 +120,11 @@ Added **idempotency protection** for POST endpoints via an `Idempotency-Key` HTT
 - **`IdempotencyCleanupScheduler`** — `@Scheduled` hourly task deletes records older than 24 hours
 - **`@EnableScheduling`** added to application class
 - Liquibase migration `004-add-idempotency-keys.yaml` creates `idempotency_keys` table with UNIQUE constraint and `created_at` index
+
+## 19. Graceful Shutdown (`dev`)
+
+Added **graceful shutdown** via properties-only configuration — no new Java files:
+- **`server.shutdown=graceful`** — Tomcat stops accepting new connections on SIGTERM; in-flight requests complete (up to 30s timeout)
+- **`spring.lifecycle.timeout-per-shutdown-phase=30s`** — maximum time to wait per shutdown phase
+- **`spring.task.scheduling.shutdown.await-termination=true`** — `TaskScheduler` waits for running `@Scheduled` tasks (e.g., `cleanupExpiredKeys()`) to finish instead of interrupting
+- Spring Boot manages all component lifecycle shutdown automatically: HikariCP (`Closeable`), EhCache (`Closeable`), Redis (`DisposableBean`), Resilience4j decorators
