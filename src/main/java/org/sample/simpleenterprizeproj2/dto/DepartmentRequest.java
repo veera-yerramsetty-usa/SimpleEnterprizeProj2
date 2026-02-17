@@ -12,6 +12,7 @@ public class DepartmentRequest {
     private String name;
 
     @Size(max = 255, message = "Description must not exceed 255 characters")
+    @Pattern(regexp = "^[a-zA-Z0-9 .,;:!?'\"()\\-]*$", message = "Description must contain only letters, digits, spaces, or common punctuation")
     private String description;
 
     public String getName() { return name; }

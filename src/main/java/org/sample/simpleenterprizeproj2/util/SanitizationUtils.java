@@ -8,7 +8,12 @@ public final class SanitizationUtils {
         if (input == null) {
             return null;
         }
-        return input.replaceAll("<[^>]*>", "").trim();
+        String trimmed = input.trim();
+        return trimmed.replace("&", "&amp;")
+                      .replace("<", "&lt;")
+                      .replace(">", "&gt;")
+                      .replace("\"", "&quot;")
+                      .replace("'", "&#x27;");
     }
 
     public static String escapeWildcards(String input) {
