@@ -8,6 +8,7 @@ import org.sample.simpleenterprizeproj2.mapper.DepartmentMapper;
 import org.sample.simpleenterprizeproj2.model.Department;
 import org.sample.simpleenterprizeproj2.repository.DepartmentRepository;
 import org.sample.simpleenterprizeproj2.specification.DepartmentSpecification;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -29,20 +30,24 @@ public class DepartmentService {
         this.departmentMapper = departmentMapper;
     }
 
+    @CircuitBreaker(name = "departmentService")
     public Page<DepartmentResponse> findAll(String name, Pageable pageable) {
         return departmentRepository.findAll(DepartmentSpecification.build(name), pageable)
                 .map(departmentMapper::toResponse);
     }
 
+    @CircuitBreaker(name = "departmentService")
     public DepartmentResponse findResponseById(Long id) {
         return departmentMapper.toResponse(findEntityById(id));
     }
 
+    @CircuitBreaker(name = "departmentService")
     public Department findEntityById(Long id) {
         return departmentRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Department not found with id " + id));
     }
 
+    @CircuitBreaker(name = "departmentService")
     @Transactional
     public DepartmentResponse create(DepartmentRequest request) {
         Department department = departmentMapper.toEntity(request);
@@ -51,6 +56,7 @@ public class DepartmentService {
         return response;
     }
 
+    @CircuitBreaker(name = "departmentService")
     @Transactional
     public DepartmentResponse update(Long id, DepartmentRequest request) {
         Department department = findEntityById(id);
@@ -60,6 +66,7 @@ public class DepartmentService {
         return response;
     }
 
+    @CircuitBreaker(name = "departmentService")
     @Transactional
     public DepartmentResponse patch(Long id, DepartmentPatchRequest request) {
         Department department = findEntityById(id);
@@ -69,6 +76,7 @@ public class DepartmentService {
         return response;
     }
 
+    @CircuitBreaker(name = "departmentService")
     @Transactional
     public void delete(Long id) {
         Department department = findEntityById(id);

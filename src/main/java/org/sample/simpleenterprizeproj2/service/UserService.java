@@ -8,6 +8,7 @@ import org.sample.simpleenterprizeproj2.mapper.UserMapper;
 import org.sample.simpleenterprizeproj2.model.User;
 import org.sample.simpleenterprizeproj2.repository.UserRepository;
 import org.sample.simpleenterprizeproj2.specification.UserSpecification;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.annotation.CacheEvict;
@@ -33,21 +34,25 @@ public class UserService {
         this.userMapper = userMapper;
     }
 
+    @CircuitBreaker(name = "userService")
     public Page<UserResponse> findAll(String username, String email, String role, Pageable pageable) {
         return userRepository.findAll(UserSpecification.build(username, email, role), pageable)
                 .map(userMapper::toResponse);
     }
 
+    @CircuitBreaker(name = "userService")
     @Cacheable(value = CACHE_NAME, key = "#id")
     public UserResponse findResponseById(Long id) {
         return userMapper.toResponse(findEntityById(id));
     }
 
+    @CircuitBreaker(name = "userService")
     public User findEntityById(Long id) {
         return userRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with id " + id));
     }
 
+    @CircuitBreaker(name = "userService")
     @Transactional
     @CachePut(value = CACHE_NAME, key = "#result.id")
     public UserResponse create(UserRequest request) {
@@ -57,6 +62,7 @@ public class UserService {
         return response;
     }
 
+    @CircuitBreaker(name = "userService")
     @Transactional
     @CachePut(value = CACHE_NAME, key = "#id")
     public UserResponse update(Long id, UserRequest request) {
@@ -67,6 +73,7 @@ public class UserService {
         return response;
     }
 
+    @CircuitBreaker(name = "userService")
     @Transactional
     @CachePut(value = CACHE_NAME, key = "#id")
     public UserResponse patch(Long id, UserPatchRequest request) {
@@ -77,6 +84,7 @@ public class UserService {
         return response;
     }
 
+    @CircuitBreaker(name = "userService")
     @Transactional
     @CacheEvict(value = CACHE_NAME, key = "#id")
     public void delete(Long id) {
