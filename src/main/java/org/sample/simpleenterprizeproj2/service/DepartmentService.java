@@ -8,6 +8,8 @@ import org.sample.simpleenterprizeproj2.mapper.DepartmentMapper;
 import org.sample.simpleenterprizeproj2.model.Department;
 import org.sample.simpleenterprizeproj2.repository.DepartmentRepository;
 import org.sample.simpleenterprizeproj2.specification.DepartmentSpecification;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -16,6 +18,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional(readOnly = true)
 public class DepartmentService {
+
+    private static final Logger log = LoggerFactory.getLogger(DepartmentService.class);
 
     private final DepartmentRepository departmentRepository;
     private final DepartmentMapper departmentMapper;
@@ -42,21 +46,27 @@ public class DepartmentService {
     @Transactional
     public DepartmentResponse create(DepartmentRequest request) {
         Department department = departmentMapper.toEntity(request);
-        return departmentMapper.toResponse(departmentRepository.save(department));
+        DepartmentResponse response = departmentMapper.toResponse(departmentRepository.save(department));
+        log.info("Created department id={}", response.getId());
+        return response;
     }
 
     @Transactional
     public DepartmentResponse update(Long id, DepartmentRequest request) {
         Department department = findEntityById(id);
         departmentMapper.updateEntity(department, request);
-        return departmentMapper.toResponse(departmentRepository.save(department));
+        DepartmentResponse response = departmentMapper.toResponse(departmentRepository.save(department));
+        log.info("Updated department id={}", id);
+        return response;
     }
 
     @Transactional
     public DepartmentResponse patch(Long id, DepartmentPatchRequest request) {
         Department department = findEntityById(id);
         departmentMapper.patchEntity(department, request);
-        return departmentMapper.toResponse(departmentRepository.save(department));
+        DepartmentResponse response = departmentMapper.toResponse(departmentRepository.save(department));
+        log.info("Patched department id={}", id);
+        return response;
     }
 
     @Transactional
@@ -64,5 +74,6 @@ public class DepartmentService {
         Department department = findEntityById(id);
         department.setDeleted(true);
         departmentRepository.save(department);
+        log.info("Soft-deleted department id={}", id);
     }
 }

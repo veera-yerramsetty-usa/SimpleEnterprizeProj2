@@ -8,6 +8,8 @@ import org.sample.simpleenterprizeproj2.mapper.UserMapper;
 import org.sample.simpleenterprizeproj2.model.User;
 import org.sample.simpleenterprizeproj2.repository.UserRepository;
 import org.sample.simpleenterprizeproj2.specification.UserSpecification;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -16,6 +18,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional(readOnly = true)
 public class UserService {
+
+    private static final Logger log = LoggerFactory.getLogger(UserService.class);
 
     private final UserRepository userRepository;
     private final UserMapper userMapper;
@@ -42,21 +46,27 @@ public class UserService {
     @Transactional
     public UserResponse create(UserRequest request) {
         User user = userMapper.toEntity(request);
-        return userMapper.toResponse(userRepository.save(user));
+        UserResponse response = userMapper.toResponse(userRepository.save(user));
+        log.info("Created user id={}", response.getId());
+        return response;
     }
 
     @Transactional
     public UserResponse update(Long id, UserRequest request) {
         User user = findEntityById(id);
         userMapper.updateEntity(user, request);
-        return userMapper.toResponse(userRepository.save(user));
+        UserResponse response = userMapper.toResponse(userRepository.save(user));
+        log.info("Updated user id={}", id);
+        return response;
     }
 
     @Transactional
     public UserResponse patch(Long id, UserPatchRequest request) {
         User user = findEntityById(id);
         userMapper.patchEntity(user, request);
-        return userMapper.toResponse(userRepository.save(user));
+        UserResponse response = userMapper.toResponse(userRepository.save(user));
+        log.info("Patched user id={}", id);
+        return response;
     }
 
     @Transactional
@@ -64,5 +74,6 @@ public class UserService {
         User user = findEntityById(id);
         user.setDeleted(true);
         userRepository.save(user);
+        log.info("Soft-deleted user id={}", id);
     }
 }

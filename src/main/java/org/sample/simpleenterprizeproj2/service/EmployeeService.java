@@ -9,6 +9,8 @@ import org.sample.simpleenterprizeproj2.model.Department;
 import org.sample.simpleenterprizeproj2.model.Employee;
 import org.sample.simpleenterprizeproj2.repository.EmployeeRepository;
 import org.sample.simpleenterprizeproj2.specification.EmployeeSpecification;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -17,6 +19,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional(readOnly = true)
 public class EmployeeService {
+
+    private static final Logger log = LoggerFactory.getLogger(EmployeeService.class);
 
     private final EmployeeRepository employeeRepository;
     private final DepartmentService departmentService;
@@ -49,7 +53,9 @@ public class EmployeeService {
     public EmployeeResponse create(EmployeeRequest request) {
         Employee employee = employeeMapper.toEntity(request);
         resolveDepartment(employee, request.getDepartmentId());
-        return employeeMapper.toResponse(employeeRepository.save(employee));
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        log.info("Created employee id={}", response.getId());
+        return response;
     }
 
     @Transactional
@@ -57,7 +63,9 @@ public class EmployeeService {
         Employee employee = findEntityById(id);
         employeeMapper.updateEntity(employee, request);
         resolveDepartment(employee, request.getDepartmentId());
-        return employeeMapper.toResponse(employeeRepository.save(employee));
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        log.info("Updated employee id={}", id);
+        return response;
     }
 
     @Transactional
@@ -67,7 +75,9 @@ public class EmployeeService {
         if (request.getDepartmentId() != null) {
             resolveDepartment(employee, request.getDepartmentId());
         }
-        return employeeMapper.toResponse(employeeRepository.save(employee));
+        EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
+        log.info("Patched employee id={}", id);
+        return response;
     }
 
     @Transactional
@@ -75,6 +85,7 @@ public class EmployeeService {
         Employee employee = findEntityById(id);
         employee.setDeleted(true);
         employeeRepository.save(employee);
+        log.info("Soft-deleted employee id={}", id);
     }
 
     private void resolveDepartment(Employee employee, Long departmentId) {
