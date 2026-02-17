@@ -191,3 +191,14 @@ Standardized all timestamps on **UTC** using `java.time.Instant` instead of `Loc
 - **Liquibase migration `006-convert-timestamps-to-utc.yaml`** — converts all 3 `created_at` columns from `TIMESTAMP` to `TIMESTAMP WITH TIME ZONE`
 - **Cleanup schedulers** — use `Instant.now().minus(Duration.ofHours(24))` and `Instant.now().minus(Duration.ofDays(7))` instead of `LocalDateTime.now().minusHours/minusDays`
 - **Zero new dependencies** — `Instant`, `Duration`, and Jackson's `JavaTimeModule` are already available
+
+## 25. Spring Batch Processing (`dev`)
+
+Added **Spring Batch 5.x** for enterprise batch processing with two jobs demonstrating Tasklet and chunk-oriented patterns, triggered via REST API:
+- **`spring-boot-starter-batch`** dependency — Spring Boot 4.x auto-configures `JobRepository`, `JobLauncher`, `PlatformTransactionManager` (no `@EnableBatchProcessing`)
+- **`softDeletePurgeJob`** — Tasklet-based job that permanently deletes soft-deleted records using `JdbcTemplate` (bypasses `@SQLRestriction("deleted = false")` that hides soft-deleted records from JPA)
+- **`employeeExportJob`** — chunk-oriented job (chunk size 100) that reads active employees via `RepositoryItemReader`, processes through `EmployeeCsvRowProcessor`, and writes CSV via `@StepScope` `FlatFileItemWriter` with late-bound `#{jobParameters['outputPath']}`
+- **REST API** at `/api/v1/batch/jobs` — `POST /soft-delete-purge`, `POST /employee-export`, `GET /executions/{id}`
+- **`JobCompletionListener`** — logs job name, execution ID, status, and duration after each job
+- **Batch metadata tables** auto-created via `spring.batch.jdbc.initialize-schema=embedded`; `spring.batch.job.enabled=false` prevents jobs from running at startup
+- **Profile-aware export directory** — `./batch-output` (dev), `./data/batch-output` (prod)

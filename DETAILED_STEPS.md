@@ -34,8 +34,9 @@
 24. [Feature 22 — Webhook Support](#24-feature-22--webhook-support)
 25. [Feature 23 — Multi-language Support (i18n)](#25-feature-23--multi-language-support-i18n)
 26. [Feature 24 — Timezone Handling (UTC Standardization)](#26-feature-24--timezone-handling-utc-standardization)
-27. [Cross-Cutting Concerns Summary](#27-cross-cutting-concerns-summary)
-28. [Full API Endpoint Reference](#28-full-api-endpoint-reference)
+27. [Feature 25 — Spring Batch Processing](#27-feature-25--spring-batch-processing)
+28. [Cross-Cutting Concerns Summary](#28-cross-cutting-concerns-summary)
+29. [Full API Endpoint Reference](#29-full-api-endpoint-reference)
 
 ---
 
@@ -2459,9 +2460,114 @@ Instant cutoff = Instant.now().minus(Duration.ofHours(24));
 
 ---
 
-## 27. Cross-Cutting Concerns Summary
+## 27. Feature 25 — Spring Batch Processing
 
-### How the 24 features interact
+### What it does
+
+Adds Spring Batch 5.x to the project with two batch jobs — a Tasklet-based soft-delete purge job and a chunk-oriented employee CSV export job — both triggered via REST API with execution status tracking.
+
+### Why it matters
+
+Enterprise systems need batch processing for data maintenance (purging stale records), ETL pipelines, and reporting. Spring Batch provides:
+- **Chunk-oriented processing** — reads, processes, and writes data in configurable chunks with automatic transaction management
+- **Job metadata tracking** — execution history, status, parameters, and restartability stored in dedicated tables
+- **Standard programming model** — `ItemReader` → `ItemProcessor` → `ItemWriter` pipeline with clear separation of concerns
+- **Framework guarantees** — skip/retry policies, listeners, and step-level transaction boundaries
+
+Without a batch framework, the existing `@Scheduled` cleanup tasks operate as raw SQL with no execution tracking, no restartability, and no standard API for monitoring.
+
+### How it works
+
+**Soft-Delete Purge Job (Tasklet pattern):**
+The `SoftDeletePurgeTasklet` uses `JdbcTemplate` to execute `DELETE FROM employees/users/departments WHERE deleted = true`. JdbcTemplate is required because `@SQLRestriction("deleted = false")` on all entities hides soft-deleted records from JPA/Hibernate queries — the ORM literally cannot see the records we want to delete. The tasklet logs counts and returns `RepeatStatus.FINISHED`.
+
+**Employee Export Job (Chunk pattern):**
+```
+RepositoryItemReader → EmployeeCsvRowProcessor → FlatFileItemWriter
+   (page size 100)        (Entity → Record)         (@StepScope, CSV)
+```
+- `RepositoryItemReader` uses `EmployeeRepository.findAll` with `@SQLRestriction` filtering (exports only active employees), sorted by `id ASC`, page size 100
+- `EmployeeCsvRowProcessor` maps `Employee` entity to `EmployeeCsvRow` record, resolving the lazy-loaded department name (safe because chunk step runs within a transaction)
+- `FlatFileItemWriter` is `@StepScope` to enable late-binding of `#{jobParameters['outputPath']}` — the bean is created per step execution, not at startup
+
+**Batch Configuration (no `@EnableBatchProcessing`):**
+Spring Boot 4.x auto-configures `JobRepository`, `JobLauncher`, and `PlatformTransactionManager`. Adding `@EnableBatchProcessing` would *disable* this auto-configuration. The `BatchConfig` class uses Spring Batch 5.x builder API:
+```java
+new JobBuilder("softDeletePurgeJob", jobRepository)
+    .listener(listener)
+    .start(purgeStep)
+    .build();
+
+new StepBuilder("exportStep", jobRepository)
+    .<Employee, EmployeeCsvRow>chunk(100, transactionManager)
+    .reader(employeeReader)
+    .processor(processor)
+    .writer(csvWriter)
+    .build();
+```
+
+**REST API (`/api/v1/batch/jobs`):**
+- `POST /soft-delete-purge` — launches purge job with `timestamp` parameter for uniqueness (Spring Batch requires unique `JobParameters` per execution)
+- `POST /employee-export` — creates export directory, launches export job with `outputPath` + `timestamp` parameters
+- `GET /executions/{id}` — returns `JobExecutionResponse` (executionId, jobName, status, startTime, endTime, exitDescription) via `JobExplorer`
+
+**Batch metadata tables:**
+`spring.batch.jdbc.initialize-schema=embedded` lets Spring Batch auto-create its metadata tables (`BATCH_JOB_INSTANCE`, `BATCH_JOB_EXECUTION`, `BATCH_STEP_EXECUTION`, etc.). These are framework-internal and version-coupled to Spring Batch — no Liquibase migration needed.
+
+### Key files
+
+| File | Purpose |
+|---|---|
+| `batch/BatchConfig.java` | `@Configuration` defining both jobs, steps, reader, and writer beans |
+| `batch/SoftDeletePurgeTasklet.java` | `Tasklet` that purges soft-deleted records via `JdbcTemplate` |
+| `batch/EmployeeCsvRowProcessor.java` | `ItemProcessor<Employee, EmployeeCsvRow>` for entity-to-CSV mapping |
+| `batch/EmployeeCsvRow.java` | Java record for flat CSV output structure |
+| `batch/JobCompletionListener.java` | `JobExecutionListener` that logs job completion with duration |
+| `dto/JobExecutionResponse.java` | DTO for batch execution status in API responses |
+| `controller/BatchJobController.java` | REST controller for triggering jobs and checking execution status |
+| `application.properties` | `spring.batch.jdbc.initialize-schema=embedded`, `spring.batch.job.enabled=false` |
+| `application-dev.properties` | `batch.export.directory=./batch-output` |
+| `application-prod.properties` | `batch.export.directory=./data/batch-output` |
+
+### Design decisions & trade-offs
+
+| Decision | Rationale |
+|---|---|
+| No `@EnableBatchProcessing` | Disables Spring Boot auto-config in Boot 4.x; without it, Boot auto-configures `JobRepository`, `JobLauncher`, `TransactionManager` |
+| `initialize-schema=embedded` (no Liquibase) | Batch metadata tables are framework-internal, version-coupled to Spring Batch; letting Batch manage its own DDL avoids fragile coupling |
+| `JdbcTemplate` in purge tasklet | `@SQLRestriction("deleted = false")` hides soft-deleted records from all JPA queries; JdbcTemplate bypasses Hibernate entirely |
+| `RepositoryItemReader` for export | Reuses existing `EmployeeRepository` with `@SQLRestriction` filtering (exports only active employees) and Hibernate L2 cache |
+| `@StepScope` on writer | Enables late-binding of `#{jobParameters['outputPath']}` — bean created per step execution, not at startup |
+| Synchronous `JobLauncher` | Simpler for demo; HTTP response includes final status. Production would use async launcher |
+| Chunk size 100 = page size 100 | Balances memory with I/O efficiency; one DB page per chunk avoids partial-page waste |
+| `timestamp` param for uniqueness | Spring Batch requires unique `JobParameters` per execution; explicit timestamp is simpler than `RunIdIncrementer` |
+| Java record for CSV row | Records provide `id()`, `firstName()` accessors; Spring Framework 7.x `BeanWrapper` handles record accessors for `FlatFileItemWriter` |
+
+### Interview Q&A
+
+**Q: Why not use `@EnableBatchProcessing` in Spring Boot 4.x?**
+> In Spring Boot 3.x+, `@EnableBatchProcessing` *disables* the auto-configuration that Boot provides for `JobRepository`, `JobLauncher`, and `PlatformTransactionManager`. Without it, Boot auto-configures everything using the application's `DataSource` and `TransactionManager`. Adding `@EnableBatchProcessing` would require manually configuring these beans, adding complexity for zero benefit.
+
+**Q: Why use `JdbcTemplate` instead of JPA for the purge tasklet?**
+> All entities have `@SQLRestriction("deleted = false")`, which Hibernate appends as a WHERE clause to every query. This means JPA literally cannot see soft-deleted records — `findAll()`, JPQL `DELETE`, and Criteria queries all filter them out. `JdbcTemplate` executes raw SQL that bypasses Hibernate entirely, making it the only way to target soft-deleted records without removing the safety filter.
+
+**Q: What is `@StepScope` and why is it needed on the CSV writer?**
+> `@StepScope` creates a new bean instance for each step execution rather than once at application startup. This enables Spring Expression Language (SpEL) late-binding of job parameters like `#{jobParameters['outputPath']}`. Without `@StepScope`, the `outputPath` value would be resolved at startup (when no job parameters exist), causing a null value or initialization error.
+
+**Q: Why use `timestamp` parameter instead of `RunIdIncrementer`?**
+> Spring Batch requires unique `JobParameters` for each job execution to prevent accidental re-runs. `RunIdIncrementer` adds an auto-incrementing `run.id` parameter, but it requires querying the `JobRepository` to find the last ID. An explicit timestamp is simpler, self-documenting, and guarantees uniqueness without additional repository queries.
+
+**Q: How does chunk-oriented processing differ from a Tasklet?**
+> A Tasklet executes a single operation in one transaction — suitable for simple tasks like running SQL statements. Chunk-oriented processing reads items one at a time, processes them, and writes them in configurable chunks (e.g., 100 items per transaction). This is ideal for large datasets because it limits memory usage, provides natural commit points, and enables skip/retry at the item level.
+
+**Q: Why auto-create batch metadata tables instead of managing them with Liquibase?**
+> Batch metadata tables (`BATCH_JOB_INSTANCE`, `BATCH_JOB_EXECUTION`, etc.) are tightly coupled to Spring Batch's internal schema version. Spring Batch owns the DDL and may change it between versions. Managing these through Liquibase would create fragile coupling — a Spring Batch upgrade could break the application if the Liquibase migration doesn't match the new expected schema. `initialize-schema=embedded` lets the framework manage its own tables.
+
+---
+
+## 28. Cross-Cutting Concerns Summary
+
+### How the 25 features interact
 
 ```
 Request Flow:
@@ -2525,7 +2631,7 @@ Request Flow:
 
 ---
 
-## 28. Full API Endpoint Reference
+## 29. Full API Endpoint Reference
 
 ### User Endpoints
 
@@ -2589,6 +2695,14 @@ Request Flow:
 
 **Query parameters for GET list**: `page`, `size`, `sort`
 
+### Batch Job Endpoints
+
+| Method | Path | Body | Response | Status Codes |
+|---|---|---|---|---|
+| POST | `/api/v1/batch/jobs/soft-delete-purge` | — | `JobExecutionResponse` | 200, 500 |
+| POST | `/api/v1/batch/jobs/employee-export` | — | `JobExecutionResponse` | 200, 500 |
+| GET | `/api/v1/batch/jobs/executions/{id}` | — | `JobExecutionResponse` | 200, 404, 500 |
+
 ### Utility Endpoints
 
 | Path | Description |
@@ -2640,4 +2754,4 @@ public class DatabaseConfig {
 
 ---
 
-*This document covers all 21 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*
+*This document covers all 25 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*
