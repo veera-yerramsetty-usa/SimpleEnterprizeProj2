@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xmlns="http://www.ehcache.org/v3"
+        xsi:noNamespaceSchemaLocation="http://www.ehcache.org/schema/ehcache-core-3.0.xsd">
+
+    <!-- User entity region: READ_WRITE, 1000 entries, 10-min TTL -->
+    <cache alias="org.sample.simpleenterprizeproj2.model.User">
+        <expiry>
+            <ttl unit="minutes">10</ttl>
+        </expiry>
+        <heap unit="entries">1000</heap>
+    </cache>
+
+    <!-- Employee entity region: READ_WRITE, 2000 entries, 10-min TTL -->
+    <cache alias="org.sample.simpleenterprizeproj2.model.Employee">
+        <expiry>
+            <ttl unit="minutes">10</ttl>
+        </expiry>
+        <heap unit="entries">2000</heap>
+    </cache>
+
+    <!-- Department entity region: NONSTRICT_READ_WRITE, 200 entries, 10-min TTL -->
+    <cache alias="org.sample.simpleenterprizeproj2.model.Department">
+        <expiry>
+            <ttl unit="minutes">10</ttl>
+        </expiry>
+        <heap unit="entries">200</heap>
+    </cache>
+
+    <!-- Query results region: 500 entries, 5-min TTL -->
+    <cache alias="default-query-results-region">
+        <expiry>
+            <ttl unit="minutes">5</ttl>
+        </expiry>
+        <heap unit="entries">500</heap>
+    </cache>
+
+    <!-- Update timestamps region: no expiry (critical for query cache correctness) -->
+    <cache alias="default-update-timestamps-region">
+        <expiry>
+            <none/>
+        </expiry>
+        <heap unit="entries">5000</heap>
+    </cache>
+
+</config>

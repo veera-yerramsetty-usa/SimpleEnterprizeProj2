@@ -1,11 +1,15 @@
 package org.sample.simpleenterprizeproj2.model;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.Cache;
+import org.hibernate.annotations.CacheConcurrencyStrategy;
 import org.hibernate.annotations.SQLRestriction;
 
 @Entity
 @Table(name = "users")
 @SQLRestriction("deleted = false")
+@Cacheable
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
 public class User {
 
     @Id
