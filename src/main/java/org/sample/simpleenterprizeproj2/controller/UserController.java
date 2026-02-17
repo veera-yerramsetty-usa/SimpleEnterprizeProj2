@@ -1,5 +1,11 @@
 package org.sample.simpleenterprizeproj2.controller;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 import org.sample.simpleenterprizeproj2.dto.UserPatchRequest;
@@ -24,6 +30,7 @@ import static org.springframework.hateoas.server.mvc.WebMvcLinkBuilder.methodOn;
 @Validated
 @RestController
 @RequestMapping("/api/v1/users")
+@Tag(name = "Users", description = "User management operations")
 public class UserController {
 
     private final UserService userService;
@@ -36,10 +43,16 @@ public class UserController {
     }
 
     @GetMapping
+    @Operation(summary = "List users", description = "Retrieve a paginated list of users with optional filters")
+    @ApiResponse(responseCode = "200", description = "Users retrieved successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid query parameter",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     public ResponseEntity<PagedModel<EntityModel<UserResponse>>> getAll(
-            @RequestParam(required = false) @Size(max = 255) String username,
-            @RequestParam(required = false) @Size(max = 255) String email,
-            @RequestParam(required = false) @Size(max = 255) String role,
+            @Parameter(description = "Filter by username (partial match)") @RequestParam(required = false) @Size(max = 255) String username,
+            @Parameter(description = "Filter by email (partial match)") @RequestParam(required = false) @Size(max = 255) String email,
+            @Parameter(description = "Filter by role (partial match)") @RequestParam(required = false) @Size(max = 255) String role,
             Pageable pageable) {
         Page<UserResponse> page = userService.findAll(username, email, role, pageable);
         return ResponseEntity.ok(pagedAssembler.toModel(page,
@@ -47,11 +60,26 @@ public class UserController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<EntityModel<UserResponse>> getById(@PathVariable Long id) {
+    @Operation(summary = "Get user by ID", description = "Retrieve a single user by their ID")
+    @ApiResponse(responseCode = "200", description = "User found")
+    @ApiResponse(responseCode = "404", description = "User not found",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    public ResponseEntity<EntityModel<UserResponse>> getById(
+            @Parameter(description = "User ID") @PathVariable Long id) {
         return ResponseEntity.ok(toEntityModel(userService.findResponseById(id)));
     }
 
     @PostMapping
+    @Operation(summary = "Create user", description = "Create a new user")
+    @ApiResponse(responseCode = "201", description = "User created successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid request body",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "409", description = "User with given unique field(s) already exists",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     public ResponseEntity<EntityModel<UserResponse>> create(@Valid @RequestBody UserRequest request) {
         UserResponse response = userService.create(request);
         URI location = ServletUriComponentsBuilder.fromCurrentRequest()
@@ -60,19 +88,48 @@ public class UserController {
     }
 
     @PutMapping("/{id}")
+    @Operation(summary = "Update user", description = "Fully replace an existing user")
+    @ApiResponse(responseCode = "200", description = "User updated successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid request body",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "404", description = "User not found",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "409", description = "User with given unique field(s) already exists",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     public ResponseEntity<EntityModel<UserResponse>> update(
-            @PathVariable Long id, @Valid @RequestBody UserRequest request) {
+            @Parameter(description = "User ID") @PathVariable Long id,
+            @Valid @RequestBody UserRequest request) {
         return ResponseEntity.ok(toEntityModel(userService.update(id, request)));
     }
 
     @PatchMapping("/{id}")
+    @Operation(summary = "Partially update user", description = "Update specific fields of an existing user")
+    @ApiResponse(responseCode = "200", description = "User patched successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid request body",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "404", description = "User not found",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "409", description = "User with given unique field(s) already exists",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     public ResponseEntity<EntityModel<UserResponse>> patch(
-            @PathVariable Long id, @Valid @RequestBody UserPatchRequest request) {
+            @Parameter(description = "User ID") @PathVariable Long id,
+            @Valid @RequestBody UserPatchRequest request) {
         return ResponseEntity.ok(toEntityModel(userService.patch(id, request)));
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@PathVariable Long id) {
+    @Operation(summary = "Delete user", description = "Delete a user by their ID")
+    @ApiResponse(responseCode = "204", description = "User deleted successfully")
+    @ApiResponse(responseCode = "404", description = "User not found",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @ApiResponse(responseCode = "500", description = "Internal server error",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    public ResponseEntity<Void> delete(
+            @Parameter(description = "User ID") @PathVariable Long id) {
         userService.delete(id);
         return ResponseEntity.noContent().build();
     }
