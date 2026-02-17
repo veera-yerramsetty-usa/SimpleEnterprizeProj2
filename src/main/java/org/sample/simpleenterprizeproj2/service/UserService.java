@@ -31,10 +31,13 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final UserMapper userMapper;
+    private final AsyncNotificationService asyncNotificationService;
 
-    public UserService(UserRepository userRepository, UserMapper userMapper) {
+    public UserService(UserRepository userRepository, UserMapper userMapper,
+                       AsyncNotificationService asyncNotificationService) {
         this.userRepository = userRepository;
         this.userMapper = userMapper;
+        this.asyncNotificationService = asyncNotificationService;
     }
 
     @CircuitBreaker(name = "userService", fallbackMethod = "findAllFallback")
@@ -70,6 +73,7 @@ public class UserService {
         User user = userMapper.toEntity(request);
         UserResponse response = userMapper.toResponse(userRepository.save(user));
         log.info("Created user id={}", response.getId());
+        asyncNotificationService.notifyResourceCreated("User", response.getId());
         return response;
     }
 
@@ -83,6 +87,7 @@ public class UserService {
         userMapper.updateEntity(user, request);
         UserResponse response = userMapper.toResponse(userRepository.save(user));
         log.info("Updated user id={}", id);
+        asyncNotificationService.notifyResourceUpdated("User", id);
         return response;
     }
 
@@ -96,6 +101,7 @@ public class UserService {
         userMapper.patchEntity(user, request);
         UserResponse response = userMapper.toResponse(userRepository.save(user));
         log.info("Patched user id={}", id);
+        asyncNotificationService.notifyResourceUpdated("User", id);
         return response;
     }
 
@@ -109,6 +115,7 @@ public class UserService {
         user.setDeleted(true);
         userRepository.save(user);
         log.info("Soft-deleted user id={}", id);
+        asyncNotificationService.notifyResourceDeleted("User", id);
     }
 
     // ── Fallback methods ──────────────────────────────────────────────

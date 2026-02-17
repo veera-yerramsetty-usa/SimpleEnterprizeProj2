@@ -128,3 +128,12 @@ Added **graceful shutdown** via properties-only configuration — no new Java fi
 - **`spring.lifecycle.timeout-per-shutdown-phase=30s`** — maximum time to wait per shutdown phase
 - **`spring.task.scheduling.shutdown.await-termination=true`** — `TaskScheduler` waits for running `@Scheduled` tasks (e.g., `cleanupExpiredKeys()`) to finish instead of interrupting
 - Spring Boot manages all component lifecycle shutdown automatically: HikariCP (`Closeable`), EhCache (`Closeable`), Redis (`DisposableBean`), Resilience4j decorators
+
+## 20. Async Processing (`dev`)
+
+Added **`@Async` task execution** to offload fire-and-forget notifications from the request thread:
+- **`AsyncConfig`** — `@EnableAsync` + custom `ThreadPoolTaskExecutor` with MDC-propagating `TaskDecorator` that copies `correlationId` to async threads
+- **`AsyncNotificationService`** — `@Service` with `@Async` void methods (`notifyResourceCreated`, `notifyResourceUpdated`, `notifyResourceDeleted`) that log notification dispatch at INFO level
+- **Service integration** — `UserService`, `EmployeeService`, and `DepartmentService` call `AsyncNotificationService` after create/update/patch/delete operations
+- **Profile-aware pool sizing** — dev: core=2, max=4, queue=50; prod: core=4, max=8, queue=100
+- **Graceful shutdown** — `spring.task.execution.shutdown.await-termination=true` ensures async tasks complete before JVM exit

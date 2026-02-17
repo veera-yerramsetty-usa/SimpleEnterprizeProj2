@@ -29,12 +29,14 @@ public class EmployeeService {
     private final EmployeeRepository employeeRepository;
     private final DepartmentService departmentService;
     private final EmployeeMapper employeeMapper;
+    private final AsyncNotificationService asyncNotificationService;
 
     public EmployeeService(EmployeeRepository employeeRepository, DepartmentService departmentService,
-                           EmployeeMapper employeeMapper) {
+                           EmployeeMapper employeeMapper, AsyncNotificationService asyncNotificationService) {
         this.employeeRepository = employeeRepository;
         this.departmentService = departmentService;
         this.employeeMapper = employeeMapper;
+        this.asyncNotificationService = asyncNotificationService;
     }
 
     @CircuitBreaker(name = "employeeService", fallbackMethod = "findAllFallback")
@@ -71,6 +73,7 @@ public class EmployeeService {
         resolveDepartment(employee, request.getDepartmentId());
         EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
         log.info("Created employee id={}", response.getId());
+        asyncNotificationService.notifyResourceCreated("Employee", response.getId());
         return response;
     }
 
@@ -84,6 +87,7 @@ public class EmployeeService {
         resolveDepartment(employee, request.getDepartmentId());
         EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
         log.info("Updated employee id={}", id);
+        asyncNotificationService.notifyResourceUpdated("Employee", id);
         return response;
     }
 
@@ -99,6 +103,7 @@ public class EmployeeService {
         }
         EmployeeResponse response = employeeMapper.toResponse(employeeRepository.save(employee));
         log.info("Patched employee id={}", id);
+        asyncNotificationService.notifyResourceUpdated("Employee", id);
         return response;
     }
 
@@ -111,6 +116,7 @@ public class EmployeeService {
         employee.setDeleted(true);
         employeeRepository.save(employee);
         log.info("Soft-deleted employee id={}", id);
+        asyncNotificationService.notifyResourceDeleted("Employee", id);
     }
 
     private void resolveDepartment(Employee employee, Long departmentId) {

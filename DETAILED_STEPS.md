@@ -29,8 +29,9 @@
 19. [Feature 17 — Resilience4j Bulkhead (Concurrency Limiter)](#19-feature-17--resilience4j-bulkhead-concurrency-limiter)
 20. [Feature 18 — POST Idempotency](#20-feature-18--post-idempotency)
 21. [Feature 19 — Graceful Shutdown](#21-feature-19--graceful-shutdown)
-22. [Cross-Cutting Concerns Summary](#22-cross-cutting-concerns-summary)
-23. [Full API Endpoint Reference](#23-full-api-endpoint-reference)
+22. [Feature 20 — Async Processing](#22-feature-20--async-processing)
+23. [Cross-Cutting Concerns Summary](#23-cross-cutting-concerns-summary)
+24. [Full API Endpoint Reference](#24-full-api-endpoint-reference)
 
 ---
 
@@ -1925,9 +1926,138 @@ spring.task.scheduling.shutdown.await-termination-period=30s
 
 ---
 
-## 22. Cross-Cutting Concerns Summary
+## 22. Feature 20 — Async Processing
 
-### How the 19 features interact
+### What was done
+Added `@Async` task execution to offload fire-and-forget work (notifications, audit logs, webhooks) from the HTTP request thread. Created `AsyncConfig` with `@EnableAsync`, a custom `ThreadPoolTaskExecutor` with MDC-propagating `TaskDecorator`, and an `AsyncNotificationService` with `@Async` void methods called from all three services after write operations.
+
+### Why (Architect perspective)
+- **Reduced response latency**: Write operations (create, update, delete) often trigger side effects — email notifications, audit log writes, webhook calls. These don't need to complete before the HTTP response is sent. Running them asynchronously removes them from the critical path.
+- **Thread isolation**: Async tasks run on a dedicated thread pool, not Tomcat's request threads. If a notification endpoint is slow, it doesn't hold up HTTP request processing.
+- **MDC correlation propagation**: Without a `TaskDecorator`, async threads lose the `correlationId` set by `RequestLoggingFilter`. The decorator captures MDC context at submission time and applies it on the async thread, so log entries from async tasks are traceable back to the originating HTTP request.
+- **Graceful shutdown integration**: `await-termination=true` ensures in-flight async tasks complete before the JVM exits, preventing lost notifications during deployments.
+
+### How (Developer perspective)
+
+**`AsyncConfig.java`** — `src/main/java/.../config/AsyncConfig.java`:
+```java
+@Configuration
+@EnableAsync
+public class AsyncConfig implements AsyncConfigurer {
+
+    @Bean
+    public ThreadPoolTaskExecutor taskExecutor(ThreadPoolTaskExecutorBuilder builder) {
+        TaskDecorator mdcDecorator = runnable -> {
+            Map<String, String> context = MDC.getCopyOfContextMap();
+            return () -> {
+                if (context != null) { MDC.setContextMap(context); }
+                try { runnable.run(); }
+                finally { MDC.clear(); }
+            };
+        };
+        ThreadPoolTaskExecutor executor = builder.build();
+        executor.setTaskDecorator(mdcDecorator);
+        executor.initialize();
+        return executor;
+    }
+
+    @Override
+    public AsyncUncaughtExceptionHandler getAsyncUncaughtExceptionHandler() {
+        return (ex, method, params) ->
+                log.error("Async exception in {}: {}", method.getName(), ex.getMessage(), ex);
+    }
+}
+```
+
+**`AsyncNotificationService.java`** — `src/main/java/.../service/AsyncNotificationService.java`:
+```java
+@Service
+public class AsyncNotificationService {
+
+    @Async
+    public void notifyResourceCreated(String entityType, Long id) {
+        log.info("Dispatching creation notification for {} id={}", entityType, id);
+    }
+
+    @Async
+    public void notifyResourceUpdated(String entityType, Long id) {
+        log.info("Dispatching update notification for {} id={}", entityType, id);
+    }
+
+    @Async
+    public void notifyResourceDeleted(String entityType, Long id) {
+        log.info("Dispatching deletion notification for {} id={}", entityType, id);
+    }
+}
+```
+
+**Service integration** (same pattern in all three services):
+```java
+// In create():
+asyncNotificationService.notifyResourceCreated("User", response.getId());
+// In update() and patch():
+asyncNotificationService.notifyResourceUpdated("User", id);
+// In delete():
+asyncNotificationService.notifyResourceDeleted("User", id);
+```
+
+**Properties** (`application.properties`):
+```properties
+spring.task.execution.thread-name-prefix=async-
+```
+
+**Profile-specific pool configuration:**
+
+| Property | Dev | Prod |
+|---|---|---|
+| `pool.core-size` | 2 | 4 |
+| `pool.max-size` | 4 | 8 |
+| `pool.queue-capacity` | 50 | 100 |
+| `shutdown.await-termination` | true | true |
+| `shutdown.await-termination-period` | 30s | 30s |
+
+**How `TaskDecorator` preserves MDC:**
+```
+1. HTTP thread calls asyncNotificationService.notifyResourceCreated()
+2. TaskDecorator captures MDC.getCopyOfContextMap() (contains correlationId)
+3. Task is submitted to ThreadPoolTaskExecutor queue
+4. Async thread picks up task, sets MDC from captured map
+5. log.info() includes correlationId in log output
+6. finally block clears MDC on async thread
+```
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Direct injection | `ApplicationEventPublisher` + `@Async @EventListener` | Simpler, fewer files, explicit call chain. Events add indirection and are harder to trace in a debugger |
+| `void` return (fire-and-forget) | `CompletableFuture<Void>` | Notifications don't need to report completion. `void` is simpler and avoids callers accidentally blocking on `.get()` |
+| `TaskDecorator` for MDC | `InheritableThreadLocal` | `InheritableThreadLocal` only works for child threads, not thread pool reuse. `TaskDecorator` works correctly with pooled threads |
+| `ThreadPoolTaskExecutorBuilder` | Manual `new ThreadPoolTaskExecutor()` | Builder auto-reads `spring.task.execution.*` properties. One line instead of five `set*()` calls |
+| Profile-specific pool sizes | Same pool for all profiles | Dev doesn't need 8 threads. Smaller pool matches the pattern for HikariCP sizing |
+
+### Interview talking points
+
+**Q: Why use `@Async` instead of `CompletableFuture.supplyAsync()`?**
+> `@Async` integrates with Spring's managed `TaskExecutor`, which respects graceful shutdown, pool sizing from properties, and bean lifecycle. `CompletableFuture.supplyAsync()` uses `ForkJoinPool.commonPool()` by default, which has no shutdown integration, no MDC propagation, and pool size isn't configurable via properties.
+
+**Q: How does `@Async` work under the hood?**
+> Spring creates a proxy around the `AsyncNotificationService` bean. When a caller invokes an `@Async` method, the proxy wraps the method call in a `Runnable`, applies the `TaskDecorator`, and submits it to the `ThreadPoolTaskExecutor`. The caller returns immediately (void) or gets a `Future`. This is why `@Async` methods must be called from outside the class — self-invocation bypasses the proxy.
+
+**Q: What happens if the async thread pool is exhausted?**
+> With `queue-capacity=50` (dev) or `100` (prod), tasks queue up when all core threads are busy. When the queue is full and all max threads are active, the `RejectedExecutionHandler` fires (default: `AbortPolicy` throws `RejectedExecutionException`). The `AsyncUncaughtExceptionHandler` logs the error. The HTTP response is unaffected because the caller already returned.
+
+**Q: How do you ensure MDC context isn't leaked between requests on pooled threads?**
+> The `TaskDecorator` wraps each task in a try/finally that calls `MDC.clear()` after execution. This prevents a previous request's `correlationId` from leaking into the next task on the same thread. The decorator also handles the case where `getCopyOfContextMap()` returns null (no MDC set).
+
+**Q: Why not use `@TransactionalEventListener` for post-commit notifications?**
+> `@TransactionalEventListener(phase = AFTER_COMMIT)` would ensure notifications fire only after the transaction commits, avoiding "notification sent but data rolled back" scenarios. However, it requires `ApplicationEventPublisher`, custom event classes, and `@EventListener` methods — more infrastructure for a notification that's purely informational. For critical notifications (e.g., payment confirmations), `@TransactionalEventListener` would be the right choice.
+
+---
+
+## 23. Cross-Cutting Concerns Summary
+
+### How the 20 features interact
 
 ```
 Request Flow:
@@ -1948,10 +2078,11 @@ Request Flow:
 15. Hibernate checks L2 entity cache (hit → return cached entity, no SQL)
 16. If cache miss → SQL executes against H2 (schema managed by Liquibase)
 17. Mapper converts Entity → Response DTO (with sanitization on writes)
-18. HATEOAS links added by controller
-19. Response returned (IdempotencyFilter stores response for POST with key)
-20. RequestLoggingFilter logs method, URI, status, duration
-21. GlobalExceptionHandler catches any exceptions → consistent JSON error
+18. AsyncNotificationService fires @Async notification (write operations only, runs on async- pool)
+19. HATEOAS links added by controller
+20. Response returned (IdempotencyFilter stores response for POST with key)
+21. RequestLoggingFilter logs method, URI, status, duration
+22. GlobalExceptionHandler catches any exceptions → consistent JSON error
 ```
 
 ### Cache layers (from fastest to slowest)
@@ -1983,12 +2114,13 @@ Request Flow:
 | SQL logging | `show-sql=true` | `show-sql=false` |
 | HikariCP pool | max=5, min=2 | max=20, min=5 |
 | Hibernate stats | Enabled | Disabled |
+| Async pool | core=2, max=4, queue=50 | core=4, max=8, queue=100 |
 | Log format | Text with correlationId | JSON (structured) |
 | Log level | DEBUG for app package | INFO for app package |
 
 ---
 
-## 23. Full API Endpoint Reference
+## 24. Full API Endpoint Reference
 
 ### User Endpoints
 
@@ -2080,4 +2212,4 @@ public class DatabaseConfig {
 
 ---
 
-*This document covers all 19 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*
+*This document covers all 20 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*

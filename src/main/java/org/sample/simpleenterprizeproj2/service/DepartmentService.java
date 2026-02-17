@@ -27,10 +27,13 @@ public class DepartmentService {
 
     private final DepartmentRepository departmentRepository;
     private final DepartmentMapper departmentMapper;
+    private final AsyncNotificationService asyncNotificationService;
 
-    public DepartmentService(DepartmentRepository departmentRepository, DepartmentMapper departmentMapper) {
+    public DepartmentService(DepartmentRepository departmentRepository, DepartmentMapper departmentMapper,
+                             AsyncNotificationService asyncNotificationService) {
         this.departmentRepository = departmentRepository;
         this.departmentMapper = departmentMapper;
+        this.asyncNotificationService = asyncNotificationService;
     }
 
     @CircuitBreaker(name = "departmentService", fallbackMethod = "findAllFallback")
@@ -64,6 +67,7 @@ public class DepartmentService {
         Department department = departmentMapper.toEntity(request);
         DepartmentResponse response = departmentMapper.toResponse(departmentRepository.save(department));
         log.info("Created department id={}", response.getId());
+        asyncNotificationService.notifyResourceCreated("Department", response.getId());
         return response;
     }
 
@@ -76,6 +80,7 @@ public class DepartmentService {
         departmentMapper.updateEntity(department, request);
         DepartmentResponse response = departmentMapper.toResponse(departmentRepository.save(department));
         log.info("Updated department id={}", id);
+        asyncNotificationService.notifyResourceUpdated("Department", id);
         return response;
     }
 
@@ -88,6 +93,7 @@ public class DepartmentService {
         departmentMapper.patchEntity(department, request);
         DepartmentResponse response = departmentMapper.toResponse(departmentRepository.save(department));
         log.info("Patched department id={}", id);
+        asyncNotificationService.notifyResourceUpdated("Department", id);
         return response;
     }
 
@@ -100,6 +106,7 @@ public class DepartmentService {
         department.setDeleted(true);
         departmentRepository.save(department);
         log.info("Soft-deleted department id={}", id);
+        asyncNotificationService.notifyResourceDeleted("Department", id);
     }
 
     // ── Fallback methods ──────────────────────────────────────────────
