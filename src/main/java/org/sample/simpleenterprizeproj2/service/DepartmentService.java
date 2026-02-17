@@ -4,11 +4,13 @@ import org.sample.simpleenterprizeproj2.dto.DepartmentPatchRequest;
 import org.sample.simpleenterprizeproj2.dto.DepartmentRequest;
 import org.sample.simpleenterprizeproj2.dto.DepartmentResponse;
 import org.sample.simpleenterprizeproj2.exception.ResourceNotFoundException;
+import org.sample.simpleenterprizeproj2.exception.ServiceUnavailableException;
 import org.sample.simpleenterprizeproj2.mapper.DepartmentMapper;
 import org.sample.simpleenterprizeproj2.model.Department;
 import org.sample.simpleenterprizeproj2.repository.DepartmentRepository;
 import org.sample.simpleenterprizeproj2.specification.DepartmentSpecification;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -30,24 +32,28 @@ public class DepartmentService {
         this.departmentMapper = departmentMapper;
     }
 
-    @CircuitBreaker(name = "departmentService")
+    @CircuitBreaker(name = "departmentService", fallbackMethod = "findAllFallback")
+    @Retry(name = "departmentService")
     public Page<DepartmentResponse> findAll(String name, Pageable pageable) {
         return departmentRepository.findAll(DepartmentSpecification.build(name), pageable)
                 .map(departmentMapper::toResponse);
     }
 
-    @CircuitBreaker(name = "departmentService")
+    @CircuitBreaker(name = "departmentService", fallbackMethod = "findResponseByIdFallback")
+    @Retry(name = "departmentService")
     public DepartmentResponse findResponseById(Long id) {
         return departmentMapper.toResponse(findEntityById(id));
     }
 
-    @CircuitBreaker(name = "departmentService")
+    @CircuitBreaker(name = "departmentService", fallbackMethod = "findEntityByIdFallback")
+    @Retry(name = "departmentService")
     public Department findEntityById(Long id) {
         return departmentRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Department not found with id " + id));
     }
 
-    @CircuitBreaker(name = "departmentService")
+    @CircuitBreaker(name = "departmentService", fallbackMethod = "createFallback")
+    @Retry(name = "departmentService")
     @Transactional
     public DepartmentResponse create(DepartmentRequest request) {
         Department department = departmentMapper.toEntity(request);
@@ -56,7 +62,8 @@ public class DepartmentService {
         return response;
     }
 
-    @CircuitBreaker(name = "departmentService")
+    @CircuitBreaker(name = "departmentService", fallbackMethod = "updateFallback")
+    @Retry(name = "departmentService")
     @Transactional
     public DepartmentResponse update(Long id, DepartmentRequest request) {
         Department department = findEntityById(id);
@@ -66,7 +73,8 @@ public class DepartmentService {
         return response;
     }
 
-    @CircuitBreaker(name = "departmentService")
+    @CircuitBreaker(name = "departmentService", fallbackMethod = "patchFallback")
+    @Retry(name = "departmentService")
     @Transactional
     public DepartmentResponse patch(Long id, DepartmentPatchRequest request) {
         Department department = findEntityById(id);
@@ -76,12 +84,50 @@ public class DepartmentService {
         return response;
     }
 
-    @CircuitBreaker(name = "departmentService")
+    @CircuitBreaker(name = "departmentService", fallbackMethod = "deleteFallback")
+    @Retry(name = "departmentService")
     @Transactional
     public void delete(Long id) {
         Department department = findEntityById(id);
         department.setDeleted(true);
         departmentRepository.save(department);
         log.info("Soft-deleted department id={}", id);
+    }
+
+    // ── Fallback methods ──────────────────────────────────────────────
+
+    private Page<DepartmentResponse> findAllFallback(String name, Pageable pageable, Throwable t) {
+        log.warn("Fallback for findAll triggered: {}", t.getMessage());
+        return Page.empty(pageable);
+    }
+
+    private DepartmentResponse findResponseByIdFallback(Long id, Throwable t) {
+        log.warn("Fallback for findResponseById(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("Department service is temporarily unavailable", t);
+    }
+
+    private Department findEntityByIdFallback(Long id, Throwable t) {
+        log.warn("Fallback for findEntityById(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("Department service is temporarily unavailable", t);
+    }
+
+    private DepartmentResponse createFallback(DepartmentRequest request, Throwable t) {
+        log.warn("Fallback for create triggered: {}", t.getMessage());
+        throw new ServiceUnavailableException("Department service is temporarily unavailable", t);
+    }
+
+    private DepartmentResponse updateFallback(Long id, DepartmentRequest request, Throwable t) {
+        log.warn("Fallback for update(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("Department service is temporarily unavailable", t);
+    }
+
+    private DepartmentResponse patchFallback(Long id, DepartmentPatchRequest request, Throwable t) {
+        log.warn("Fallback for patch(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("Department service is temporarily unavailable", t);
+    }
+
+    private void deleteFallback(Long id, Throwable t) {
+        log.warn("Fallback for delete(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("Department service is temporarily unavailable", t);
     }
 }

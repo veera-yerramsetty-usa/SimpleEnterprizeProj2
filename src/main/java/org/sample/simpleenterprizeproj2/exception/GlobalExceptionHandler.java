@@ -75,6 +75,13 @@ public class GlobalExceptionHandler {
         return buildResponse(HttpStatus.BAD_REQUEST, "Bad Request", "Malformed JSON request body");
     }
 
+    @ExceptionHandler(ServiceUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleServiceUnavailable(ServiceUnavailableException ex) {
+        log.warn("Service unavailable: {}", ex.getMessage());
+        return buildResponse(HttpStatus.SERVICE_UNAVAILABLE, "Service Unavailable",
+                "Service is temporarily unavailable, please try again later");
+    }
+
     @ExceptionHandler(CallNotPermittedException.class)
     public ResponseEntity<Map<String, Object>> handleCircuitBreakerOpen(CallNotPermittedException ex) {
         log.warn("Circuit breaker open: {}", ex.getMessage());

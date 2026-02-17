@@ -1,3 +1,4 @@
+
 # DETAILED_STEPS.md — Enterprise Spring Boot Project: Interview Preparation Guide
 
 > A comprehensive deep-dive into every feature implemented in **SimpleEnterprizeProj2**.
@@ -24,8 +25,9 @@
 15. [Feature 13 — Hibernate L2 Cache with EhCache](#15-feature-13--hibernate-l2-cache-with-ehcache)
 16. [Feature 14 — Resilience4j Circuit Breakers](#16-feature-14--resilience4j-circuit-breakers)
 17. [Feature 15 — Observability (Logging, Correlation IDs, Security Headers)](#17-feature-15--observability-logging-correlation-ids-security-headers)
-18. [Cross-Cutting Concerns Summary](#18-cross-cutting-concerns-summary)
-19. [Full API Endpoint Reference](#19-full-api-endpoint-reference)
+18. [Feature 16 — Resilience4j Retry & Fallback](#18-feature-16--resilience4j-retry--fallback)
+19. [Cross-Cutting Concerns Summary](#19-cross-cutting-concerns-summary)
+20. [Full API Endpoint Reference](#20-full-api-endpoint-reference)
 
 ---
 
@@ -1251,7 +1253,7 @@ public ResponseEntity<Map<String, Object>> handleCircuitBreakerOpen(CallNotPermi
 | 50% failure threshold | Higher (70-80%) for more tolerance | 50% means "half the calls are failing" — a clear signal of systemic issues. Higher thresholds would delay circuit opening |
 | `ResourceNotFoundException` ignored | Record all exceptions | A 404 is not a system failure — it's a normal "not found" response. Recording it would cause the breaker to open when users search for non-existent resources |
 | `automatic-transition-from-open-to-half-open-enabled=true` | Manual transition via actuator | Automatic transition enables self-healing without operator intervention. In critical systems, you might want manual control via management endpoints |
-| No fallback method | `@CircuitBreaker(fallbackMethod = "fallback")` | Fallbacks add complexity and can mask failures. The 503 response from `GlobalExceptionHandler` is the explicit fallback — the client knows the service is down and can retry |
+| No fallback method (initially) | `@CircuitBreaker(fallbackMethod = "fallback")` | Fallbacks were added later in Feature 16 (Retry & Fallback). Initially, the 503 response from `GlobalExceptionHandler` served as the implicit fallback |
 
 ### Interview talking points
 
@@ -1403,9 +1405,151 @@ public class SecurityHeadersFilter implements Filter {
 
 ---
 
-## 18. Cross-Cutting Concerns Summary
+## 18. Feature 16 — Resilience4j Retry & Fallback
 
-### How the 15 features interact
+### What was done
+Added `@Retry` annotations to all 21 service methods alongside the existing `@CircuitBreaker` annotations. Implemented fallback methods on the circuit breaker (outermost decorator) to provide graceful degradation for list queries and explicit 503 errors for single-resource and write operations. Created `ServiceUnavailableException` with a corresponding `@ExceptionHandler` in `GlobalExceptionHandler`.
+
+### Why (Architect perspective)
+- **Transient failure recovery**: Network blips, temporary database connection issues, and brief GC pauses are common in production. A retry with exponential backoff handles these without user-visible errors.
+- **Decorator composition**: `CircuitBreaker(Retry(method))` — retry handles transient failures *within* the circuit, and the circuit breaker only records a failure after all retries are exhausted. This prevents a single transient error from counting toward the circuit breaker threshold.
+- **Selective fallback**: List endpoints (`findAll`) can gracefully degrade to an empty page — the user sees "no results" rather than an error. Single-resource lookups and write operations cannot be meaningfully degraded, so they throw `ServiceUnavailableException` (503) to signal the client to retry later.
+- **Business exception exclusion**: `ResourceNotFoundException` (404) is a legitimate business outcome, not a transient failure. Retrying a "not found" would waste resources and delay the response.
+
+### How (Developer perspective)
+
+**Service annotation pattern** (all 3 services follow this):
+```java
+// CircuitBreaker is outer (aspect order 1), Retry is inner (aspect order 2)
+@CircuitBreaker(name = "userService", fallbackMethod = "findAllFallback")
+@Retry(name = "userService")
+public Page<UserResponse> findAll(String username, String email, String role, Pageable pageable) {
+    return userRepository.findAll(UserSpecification.build(username, email, role), pageable)
+            .map(userMapper::toResponse);
+}
+
+// Fallback — same parameters + Throwable
+private Page<UserResponse> findAllFallback(String username, String email, String role,
+                                           Pageable pageable, Throwable t) {
+    log.warn("Fallback for findAll triggered: {}", t.getMessage());
+    return Page.empty(pageable);
+}
+```
+
+**Write operations throw ServiceUnavailableException**:
+```java
+@CircuitBreaker(name = "userService", fallbackMethod = "createFallback")
+@Retry(name = "userService")
+@Transactional
+public UserResponse create(UserRequest request) { ... }
+
+private UserResponse createFallback(UserRequest request, Throwable t) {
+    log.warn("Fallback for create triggered: {}", t.getMessage());
+    throw new ServiceUnavailableException("User service is temporarily unavailable", t);
+}
+```
+
+**Retry configuration** — `application.properties`:
+```properties
+# Decorator ordering: CircuitBreaker(outer) → Retry(inner)
+resilience4j.circuitbreaker.circuitBreakerAspectOrder=1
+resilience4j.retry.retryAspectOrder=2
+
+# Retry defaults
+resilience4j.retry.configs.default.max-attempts=3
+resilience4j.retry.configs.default.wait-duration=500ms
+resilience4j.retry.configs.default.enable-exponential-backoff=true
+resilience4j.retry.configs.default.exponential-backoff-multiplier=2
+resilience4j.retry.configs.default.retry-exceptions=java.lang.Exception
+resilience4j.retry.configs.default.ignore-exceptions=\
+    org.sample.simpleenterprizeproj2.exception.ResourceNotFoundException
+
+# Named instances
+resilience4j.retry.instances.userService.base-config=default
+resilience4j.retry.instances.employeeService.base-config=default
+resilience4j.retry.instances.departmentService.base-config=default
+```
+
+**ServiceUnavailableException** — `src/main/java/.../exception/ServiceUnavailableException.java`:
+```java
+public class ServiceUnavailableException extends RuntimeException {
+    public ServiceUnavailableException(String message) { super(message); }
+    public ServiceUnavailableException(String message, Throwable cause) { super(message, cause); }
+}
+```
+
+**Exception handler** — `GlobalExceptionHandler.java`:
+```java
+@ExceptionHandler(ServiceUnavailableException.class)
+public ResponseEntity<Map<String, Object>> handleServiceUnavailable(ServiceUnavailableException ex) {
+    log.warn("Service unavailable: {}", ex.getMessage());
+    return buildResponse(HttpStatus.SERVICE_UNAVAILABLE, "Service Unavailable",
+            "Service is temporarily unavailable, please try again later");
+}
+```
+
+**Execution flow with retry and circuit breaker**:
+```
+Call → CircuitBreaker (check state)
+         │
+         ├─ OPEN → fallbackMethod() immediately
+         │
+         └─ CLOSED/HALF_OPEN → Retry
+                                  │
+                                  ├─ Attempt 1 → success → return
+                                  ├─ Attempt 1 → fail → wait 500ms
+                                  ├─ Attempt 2 → success → return
+                                  ├─ Attempt 2 → fail → wait 1000ms
+                                  ├─ Attempt 3 → success → return
+                                  └─ Attempt 3 → fail → exception propagates to CircuitBreaker
+                                                          │
+                                                          └─ CB records failure → fallbackMethod()
+```
+
+### Fallback strategy summary
+
+| Method type | Fallback behavior | Rationale |
+|---|---|---|
+| `findAll` (list queries) | Return `Page.empty(pageable)` | Graceful degradation — user sees empty results, not an error |
+| `findResponseById` | Throw `ServiceUnavailableException` | No meaningful degraded single-resource response |
+| `findEntityById` | Throw `ServiceUnavailableException` | Internal method, must propagate failure |
+| `create`, `update`, `patch` | Throw `ServiceUnavailableException` | Writes must never silently succeed or return fake data |
+| `delete` | Throw `ServiceUnavailableException` | Writes must never silently succeed |
+
+### Key decisions & trade-offs
+
+| Decision | Alternative | Why this approach |
+|---|---|---|
+| Retry as inner decorator | Retry as outer (CB records every attempt) | Inner retry means the CB only sees the final outcome. 3 transient failures resolved by retry don't move the CB toward OPEN |
+| 3 max attempts | 5+ for more resilience | 3 attempts with exponential backoff (500ms + 1000ms = 1.5s max) keeps total latency under 2 seconds. More attempts increase latency |
+| Exponential backoff (multiplier 2) | Fixed delay, jitter | Exponential backoff gives the failing system progressively more time to recover. Jitter would be ideal in high-concurrency scenarios to prevent thundering herd |
+| `Page.empty()` for `findAll` | Throw exception, cached stale data | Empty page is a valid API response. The client can display "no results" gracefully. Cached stale data requires a separate cache layer |
+| `ServiceUnavailableException` for writes | Return null, return Optional.empty() | Writes *must* report failure explicitly. A silent null return could cause data inconsistency downstream |
+| Ignore `ResourceNotFoundException` | Retry everything | A 404 is deterministic — retrying won't find a non-existent resource. Ignoring it avoids wasting 1.5s on guaranteed failures |
+| Fallback on `@CircuitBreaker` | Fallback on `@Retry` | CircuitBreaker is the outermost decorator. Its fallback catches both retry-exhaustion and circuit-open scenarios |
+
+### Interview talking points
+
+**Q: Why is the retry the inner decorator and the circuit breaker the outer?**
+> The retry handles transient failures (network blip, brief DB hiccup) by retrying up to 3 times. The circuit breaker wraps the retry — it only sees the final outcome. If all 3 retries fail, the circuit breaker records ONE failure. If retry were outer, the CB would see each individual attempt as a separate call, potentially opening the circuit prematurely from what was really a single logical operation.
+
+**Q: What happens when the circuit is OPEN and a request comes in?**
+> The circuit breaker rejects the call immediately with `CallNotPermittedException` — the retry is never invoked. The fallback method runs: `findAll` returns `Page.empty()`, others throw `ServiceUnavailableException` which maps to HTTP 503.
+
+**Q: Why not add jitter to the exponential backoff?**
+> Jitter (randomized delay) prevents the "thundering herd" problem where many retries from different clients hit the server at the same moment. For a single-instance application with moderate traffic, pure exponential backoff is sufficient. In a distributed system with many instances, you'd add `enable-randomized-wait=true` to spread retries across time.
+
+**Q: Why throw `ServiceUnavailableException` instead of just letting the original exception propagate?**
+> Fallback methods provide a controlled error path. The original exception might be a low-level database error, connection timeout, or circuit breaker rejection. Wrapping it in `ServiceUnavailableException` normalizes the error message, includes the original cause for logging, and maps cleanly to HTTP 503 via `GlobalExceptionHandler`.
+
+**Q: Could you use `@Retry` at the class level instead of on every method?**
+> Yes, but method-level gives finer control. In the future, you might want different retry configs for reads vs. writes (e.g., more retries for idempotent reads, fewer for non-idempotent writes). Method-level also makes the retry behavior explicitly visible in code review.
+
+---
+
+## 19. Cross-Cutting Concerns Summary
+
+### How the 16 features interact
 
 ```
 Request Flow:
@@ -1415,18 +1559,19 @@ Request Flow:
 4. @Validated controller validates @RequestParam (ConstraintViolationException → 400)
 5. @Valid validates @RequestBody (MethodArgumentNotValidException → 400)
 6. Controller calls Service method
-7. @CircuitBreaker checks circuit state (CallNotPermittedException → 503 if OPEN)
-8. @Cacheable checks Redis (hit → return cached DTO, skip steps 9-12)
-9. @Transactional opens/joins transaction
-10. Repository executes query with Specification filters
-11. @QueryHints checks Hibernate query cache (hit → return entity IDs from EhCache)
-12. Hibernate checks L2 entity cache (hit → return cached entity, no SQL)
-13. If cache miss → SQL executes against H2 (schema managed by Liquibase)
-14. Mapper converts Entity → Response DTO (with sanitization on writes)
-15. HATEOAS links added by controller
-16. Response returned
-17. RequestLoggingFilter logs method, URI, status, duration
-18. GlobalExceptionHandler catches any exceptions → consistent JSON error
+7. @CircuitBreaker checks circuit state (OPEN → fallbackMethod → 503 or Page.empty)
+8. @Retry attempts call (up to 3x with exponential backoff on failure)
+9. @Cacheable checks Redis (hit → return cached DTO, skip steps 10-14)
+10. @Transactional opens/joins transaction
+11. Repository executes query with Specification filters
+12. @QueryHints checks Hibernate query cache (hit → return entity IDs from EhCache)
+13. Hibernate checks L2 entity cache (hit → return cached entity, no SQL)
+14. If cache miss → SQL executes against H2 (schema managed by Liquibase)
+15. Mapper converts Entity → Response DTO (with sanitization on writes)
+16. HATEOAS links added by controller
+17. Response returned
+18. RequestLoggingFilter logs method, URI, status, duration
+19. GlobalExceptionHandler catches any exceptions → consistent JSON error
 ```
 
 ### Cache layers (from fastest to slowest)
@@ -1463,7 +1608,7 @@ Request Flow:
 
 ---
 
-## 19. Full API Endpoint Reference
+## 20. Full API Endpoint Reference
 
 ### User Endpoints
 
@@ -1555,4 +1700,4 @@ public class DatabaseConfig {
 
 ---
 
-*This document covers all 15 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*
+*This document covers all 16 features implemented in the SimpleEnterprizeProj2 project. Each section is designed to help you articulate the what, why, and how at Developer, Tech Lead, and Architect interview levels.*

@@ -4,11 +4,13 @@ import org.sample.simpleenterprizeproj2.dto.UserPatchRequest;
 import org.sample.simpleenterprizeproj2.dto.UserRequest;
 import org.sample.simpleenterprizeproj2.dto.UserResponse;
 import org.sample.simpleenterprizeproj2.exception.ResourceNotFoundException;
+import org.sample.simpleenterprizeproj2.exception.ServiceUnavailableException;
 import org.sample.simpleenterprizeproj2.mapper.UserMapper;
 import org.sample.simpleenterprizeproj2.model.User;
 import org.sample.simpleenterprizeproj2.repository.UserRepository;
 import org.sample.simpleenterprizeproj2.specification.UserSpecification;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.annotation.CacheEvict;
@@ -34,25 +36,29 @@ public class UserService {
         this.userMapper = userMapper;
     }
 
-    @CircuitBreaker(name = "userService")
+    @CircuitBreaker(name = "userService", fallbackMethod = "findAllFallback")
+    @Retry(name = "userService")
     public Page<UserResponse> findAll(String username, String email, String role, Pageable pageable) {
         return userRepository.findAll(UserSpecification.build(username, email, role), pageable)
                 .map(userMapper::toResponse);
     }
 
-    @CircuitBreaker(name = "userService")
+    @CircuitBreaker(name = "userService", fallbackMethod = "findResponseByIdFallback")
+    @Retry(name = "userService")
     @Cacheable(value = CACHE_NAME, key = "#id")
     public UserResponse findResponseById(Long id) {
         return userMapper.toResponse(findEntityById(id));
     }
 
-    @CircuitBreaker(name = "userService")
+    @CircuitBreaker(name = "userService", fallbackMethod = "findEntityByIdFallback")
+    @Retry(name = "userService")
     public User findEntityById(Long id) {
         return userRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with id " + id));
     }
 
-    @CircuitBreaker(name = "userService")
+    @CircuitBreaker(name = "userService", fallbackMethod = "createFallback")
+    @Retry(name = "userService")
     @Transactional
     @CachePut(value = CACHE_NAME, key = "#result.id")
     public UserResponse create(UserRequest request) {
@@ -62,7 +68,8 @@ public class UserService {
         return response;
     }
 
-    @CircuitBreaker(name = "userService")
+    @CircuitBreaker(name = "userService", fallbackMethod = "updateFallback")
+    @Retry(name = "userService")
     @Transactional
     @CachePut(value = CACHE_NAME, key = "#id")
     public UserResponse update(Long id, UserRequest request) {
@@ -73,7 +80,8 @@ public class UserService {
         return response;
     }
 
-    @CircuitBreaker(name = "userService")
+    @CircuitBreaker(name = "userService", fallbackMethod = "patchFallback")
+    @Retry(name = "userService")
     @Transactional
     @CachePut(value = CACHE_NAME, key = "#id")
     public UserResponse patch(Long id, UserPatchRequest request) {
@@ -84,7 +92,8 @@ public class UserService {
         return response;
     }
 
-    @CircuitBreaker(name = "userService")
+    @CircuitBreaker(name = "userService", fallbackMethod = "deleteFallback")
+    @Retry(name = "userService")
     @Transactional
     @CacheEvict(value = CACHE_NAME, key = "#id")
     public void delete(Long id) {
@@ -92,5 +101,43 @@ public class UserService {
         user.setDeleted(true);
         userRepository.save(user);
         log.info("Soft-deleted user id={}", id);
+    }
+
+    // ── Fallback methods ──────────────────────────────────────────────
+
+    private Page<UserResponse> findAllFallback(String username, String email, String role,
+                                               Pageable pageable, Throwable t) {
+        log.warn("Fallback for findAll triggered: {}", t.getMessage());
+        return Page.empty(pageable);
+    }
+
+    private UserResponse findResponseByIdFallback(Long id, Throwable t) {
+        log.warn("Fallback for findResponseById(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("User service is temporarily unavailable", t);
+    }
+
+    private User findEntityByIdFallback(Long id, Throwable t) {
+        log.warn("Fallback for findEntityById(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("User service is temporarily unavailable", t);
+    }
+
+    private UserResponse createFallback(UserRequest request, Throwable t) {
+        log.warn("Fallback for create triggered: {}", t.getMessage());
+        throw new ServiceUnavailableException("User service is temporarily unavailable", t);
+    }
+
+    private UserResponse updateFallback(Long id, UserRequest request, Throwable t) {
+        log.warn("Fallback for update(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("User service is temporarily unavailable", t);
+    }
+
+    private UserResponse patchFallback(Long id, UserPatchRequest request, Throwable t) {
+        log.warn("Fallback for patch(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("User service is temporarily unavailable", t);
+    }
+
+    private void deleteFallback(Long id, Throwable t) {
+        log.warn("Fallback for delete(id={}) triggered: {}", id, t.getMessage());
+        throw new ServiceUnavailableException("User service is temporarily unavailable", t);
     }
 }

@@ -88,3 +88,13 @@ Added **Hibernate L2 cache** and **query cache** using EhCache 3 via hibernate-j
 - **ENABLE_SELECTIVE** shared cache mode — only annotated entities are cached
 - **Profile-aware statistics** — `hibernate.generate_statistics=true` in dev, disabled in prod
 - `HibernateCacheConfig` resolves ehcache.xml classpath URI for Hibernate's JCache integration
+
+## 16. Retry & Fallback (`dev`)
+
+Added **Resilience4j Retry** with fallback methods alongside existing circuit breakers:
+- `@Retry` annotation on all 21 service methods across 3 services
+- Exponential backoff: 3 attempts, 500ms initial wait, multiplier 2 (500ms → 1000ms)
+- `ResourceNotFoundException` ignored (404 is business logic, not transient failure)
+- Decorator ordering: `CircuitBreaker(outer)` → `Retry(inner)` via aspect order properties
+- **Fallback methods** on `@CircuitBreaker`: `findAll` returns `Page.empty(pageable)` for graceful degradation; all other methods throw `ServiceUnavailableException` (503)
+- New `ServiceUnavailableException` with `@ExceptionHandler` in `GlobalExceptionHandler` returning 503
