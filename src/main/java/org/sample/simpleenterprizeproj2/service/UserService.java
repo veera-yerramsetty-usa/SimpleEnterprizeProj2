@@ -10,6 +10,9 @@ import org.sample.simpleenterprizeproj2.repository.UserRepository;
 import org.sample.simpleenterprizeproj2.specification.UserSpecification;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.CachePut;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -19,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional(readOnly = true)
 public class UserService {
 
+    private static final String CACHE_NAME = "users";
     private static final Logger log = LoggerFactory.getLogger(UserService.class);
 
     private final UserRepository userRepository;
@@ -34,6 +38,7 @@ public class UserService {
                 .map(userMapper::toResponse);
     }
 
+    @Cacheable(value = CACHE_NAME, key = "#id")
     public UserResponse findResponseById(Long id) {
         return userMapper.toResponse(findEntityById(id));
     }
@@ -44,6 +49,7 @@ public class UserService {
     }
 
     @Transactional
+    @CachePut(value = CACHE_NAME, key = "#result.id")
     public UserResponse create(UserRequest request) {
         User user = userMapper.toEntity(request);
         UserResponse response = userMapper.toResponse(userRepository.save(user));
@@ -52,6 +58,7 @@ public class UserService {
     }
 
     @Transactional
+    @CachePut(value = CACHE_NAME, key = "#id")
     public UserResponse update(Long id, UserRequest request) {
         User user = findEntityById(id);
         userMapper.updateEntity(user, request);
@@ -61,6 +68,7 @@ public class UserService {
     }
 
     @Transactional
+    @CachePut(value = CACHE_NAME, key = "#id")
     public UserResponse patch(Long id, UserPatchRequest request) {
         User user = findEntityById(id);
         userMapper.patchEntity(user, request);
@@ -70,6 +78,7 @@ public class UserService {
     }
 
     @Transactional
+    @CacheEvict(value = CACHE_NAME, key = "#id")
     public void delete(Long id) {
         User user = findEntityById(id);
         user.setDeleted(true);
